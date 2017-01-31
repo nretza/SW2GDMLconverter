@@ -41,6 +41,7 @@ const char *const surftypes[] = { "plane", "cylinder", "cone", "sphere", "torus"
 "s-revolve", "vol", "pos", "rot", "subt", "disk", "board" };
 
 static const double MIN_THICKNESS = 0.0005;
+static const double MIN_ABS_DIFF = 0.0005;
 
 typedef struct funcpair {
 	HRESULT(*boolFunc)(VARIANT_BOOL *arg);
@@ -50,8 +51,8 @@ typedef struct funcpair {
 static bool approxEqual(double val1, double val2) {
 	double diff = fabs(val1 - val2);
 	double avg = (fabs(val1) + fabs(val2)) / 2.0;
-	// Allow absolute differences of 0.01 or relative ones of 9%.
-	return (diff < 0.01 || (diff < 0.4 && (avg == 0 || diff / avg < 0.09)));
+	// Allow relative differences of 9%.
+	return (diff < MIN_ABS_DIFF || (diff < 0.4 && (avg == 0 || diff / avg < 0.09)));
 }
 
 static double checkZero(double val, double precision = 0.0000001) {
@@ -112,13 +113,13 @@ public:
 	{
 		coords difference;
 		difference.x = x - operand.x;
-		if (fabs(difference.x) < 0.0001)
+		if (fabs(difference.x) < MIN_ABS_DIFF)
 			difference.x = 0.0;
 		difference.y = y - operand.y;
-		if (fabs(difference.y) < 0.0001)
+		if (fabs(difference.y) < MIN_ABS_DIFF)
 			difference.y = 0.0;
 		difference.z = z - operand.z;
-		if (fabs(difference.z) < 0.0001)
+		if (fabs(difference.z) < MIN_ABS_DIFF)
 			difference.z = 0.0;
 		return (difference);
 	}
@@ -127,13 +128,13 @@ public:
 	{
 		coords sum;
 		sum.x = x + operand.x;
-		if (fabs(sum.x) < 0.0001)
+		if (fabs(sum.x) < MIN_ABS_DIFF)
 			sum.x = 0.0;
 		sum.y = y + operand.y;
-		if (fabs(sum.y) < 0.0001)
+		if (fabs(sum.y) < MIN_ABS_DIFF)
 			sum.y = 0.0;
 		sum.z = z + operand.z;
-		if (fabs(sum.z) < 0.0001)
+		if (fabs(sum.z) < MIN_ABS_DIFF)
 			sum.z = 0.0;
 		return (sum);
 	}
@@ -687,7 +688,7 @@ public:
 			length = width;
 			width = lengthVal;
 		}
-		return (consistentVals && length > 0.01 && width > 0.01); // Eliminate mysterious tiny boards
+		return (consistentVals && length > 0.001 && width > 0.001); // Eliminate mysterious tiny boards
 	}
 
 	double length, width;
@@ -806,6 +807,26 @@ public:
 
 typedef vector < pair<coords, int> > centerSurfIndArray;
 
+template<class T>
+class PatternFuncs {
+public:
+	virtual double getSpacing(T *patternType, AssemblyInfo &assembly) = 0;
+};
+
+template<class T>
+class LinPattFuncs : public PatternFuncs<T> {
+public:
+	virtual double getSpacing(T *patternType, AssemblyInfo &assembly) override;
+};
+
+template<class T>
+class CircPattFuncs : public PatternFuncs<T> {
+public:
+	virtual double getSpacing(T *patternType, AssemblyInfo &assembly) override;
+};
+
+
+
 class AssemblyInfo {
 public:
 	AssemblyInfo() :
@@ -839,6 +860,9 @@ public:
 	void getTransfDisplace(ILocalLinearPatternFeatureData *linpattern, double xspacing, double zspacing);
 	void findTorusCenter();
 	void chkEllipAxis();
+	void chkPatterns(CComPtr<IFeature> swFeature, IModelDoc2* swModel, const CComBSTR &sTypeName);
+	template<typename T>
+	void procPattern(CComPtr<IFeature> swFeature, IModelDoc2* swModel, PatternFuncs<T> *pattfuncs);
 
 	vector<GenericSurf *> surfArray;
 	int surfArrayInd;
@@ -3716,6 +3740,217 @@ void AssemblyInfo::getTransfDisplace(ILocalLinearPatternFeatureData *linpattern,
 
 }
 
+// ********* Finish this method. It should already find the Spacing
+// What else is needed? What does spacing mean for circular pattern?
+// Seed components are components that are related to the pattern.
+template<class T>
+double CircPattFuncs<T>::getSpacing(T *patternType, AssemblyInfo &assembly) {
+	// Need similar code as for linear pattern, but circular pattern has different methods
+	double spacing = 0;
+	hres = thePattern->get_Spacing(&spacing);
+	cout << "Circ spacing " << spacing << endl;
+	return(spacing);
+}
+
+template<class T>
+double LinPattFuncs<T>::getSpacing(T *thePattern, AssemblyInfo &assembly) {
+	double xspacing = 0;
+	hres = thePattern->get_D1Spacing(&xspacing);
+	cout << "D1 spacing " << xspacing << endl;
+	double zspacing = 0;
+	hres = thePattern->get_D2Spacing(&zspacing);
+	cout << "D2 spacing " << zspacing << endl;
+	VARIANT_BOOL revDir = VARIANT_FALSE;
+	hres = thePattern->get_D1ReverseDirection(&revDir);
+	cout << "D1 reverse direction " << revDir << endl;
+	long axisType = -1;
+	hres = thePattern->GetD1AxisType(&axisType);
+	cout << "D1 axis type is " << axisType << endl;
+	hres = thePattern->get_D2ReverseDirection(&revDir);
+	cout << "D2 reverse direction " << revDir << endl;
+	hres = thePattern->GetD2AxisType(&axisType);
+	cout << "D2 axis type is " << axisType << endl;
+	assembly.getTransfDisplace(thePattern, xspacing, zspacing);
+	long cnt = -1;
+	hres = thePattern->GetSeedComponentCount(&cnt);
+	cout << "Seed component count is " << cnt << endl;
+	if (cnt > 0) {
+		assembly.getSeedComps(thePattern);
+	}
+	hres = thePattern->GetSkippedItemCount(&cnt);
+	cout << "Skipped item count is " << cnt << endl;
+	hres = thePattern->get_D1TotalInstances(&cnt);
+	cout << "D1 instances is " << cnt << endl;
+	long d2Cnt = -1;
+	hres = thePattern->get_D2TotalInstances(&d2Cnt);
+	cout << "D2 instances is " << d2Cnt << endl;
+	int totInstances = cnt + d2Cnt - 1; // Don't count seed instance
+	cout << "Instance total = " << totInstances << endl;
+	struct IDispatch *RefAxisDisp;
+	hres = thePattern->get_D1Axis(&RefAxisDisp);
+	if (hres == S_OK && RefAxisDisp) {
+		UINT typeCnt = -1;
+		hres = RefAxisDisp->GetTypeInfoCount(&typeCnt);
+		cout << "type count = " << typeCnt << " hres " << hres << endl;
+		CComPtr<ITypeInfo> spTypeInfo;
+		hres = RefAxisDisp->GetTypeInfo(0, 0, &spTypeInfo);
+		if (hres == S_OK && spTypeInfo) {
+			CComBSTR sITypeName, sDocName, sHelp, sFile;
+			DWORD context = -1;
+			hres = spTypeInfo->GetDocumentation(-1, &sITypeName, &sDocName, &context, &sFile);
+			printbstr("type name ", sITypeName);
+			printbstr("doc name ", sDocName);
+			printbstr("file name ", sFile);
+		}
+		else cout << "No typeinfo, res " << hres << " ptr " << spTypeInfo << endl;
+		IID unused = IID_NULL;
+		CComBSTR refName(L"axis");
+		DISPID dispID;
+		hres = RefAxisDisp->GetIDsOfNames(unused, &refName, 1, GetUserDefaultLCID(), &dispID);
+		cout << "getids hres = " << std::hex << hres << " dispid = " << dispID << endl;
+		CComPtr<IRefAxis> refAxis;
+		// hres = RefAxisDisp->QueryInterface(IID_IRefAxis, reinterpret_cast<void**>(&refAxis));
+		// RefAxisDisp->Release();
+		if (false) {
+			double *axisArray = new double[7];
+			hres = refAxis->IGetRefAxisParams(axisArray);
+			cout << "Found ref axis feature data\n";
+			if (hres == S_OK) {
+				coords startPt(axisArray[0], axisArray[1], axisArray[2]);
+				coords endPt(axisArray[3], axisArray[4], axisArray[5]);
+				cout << "start and end pts" << startPt << " " << endPt << endl;
+			}
+		}
+		else cout << "Couldn't get refaxis " << std::hex << hres << " ptr " << refAxis << endl;
+	}
+	thePattern->ReleaseSelectionAccess();
+	return (xspacing);
+}
+
+template<typename T>
+void AssemblyInfo::procPattern(CComPtr<IFeature> swFeature, IModelDoc2* swModel, PatternFuncs<T> *pattfuncs) {
+	struct IDispatch *pPatternDisp;
+	T *thePattern;
+	hres = swFeature->GetDefinition(&pPatternDisp);
+	if (hres == S_OK && pPatternDisp) {
+		cout << "Found Local Circular or Linear Pattern definition " << endl;
+		hres = pPatternDisp->QueryInterface(__uuidof(typename T), reinterpret_cast<void**>(&thePattern));
+		pPatternDisp->Release();
+		if (hres == S_OK && thePattern) {
+			cout << "Found Local Circular or Linear Pattern! " << endl;
+			VARIANT_BOOL accessOk = VARIANT_FALSE;
+			hres = thePattern->AccessSelections(swModel, NULL, &accessOk);
+			if (hres == S_OK && accessOk == VARIANT_TRUE) {
+				double valpatt = pattfuncs->getSpacing(thePattern, *this);
+			}
+			else cout << "Can't access selections\n";
+		}
+		else cout << "Failed to get local pattern retval = " << hres << " ptr = " << thePattern << endl;
+	}
+	else cout << "Failed to get local pattern definition retval = " << hres << " ptr = " << pPatternDisp << endl;
+}
+
+void AssemblyInfo::chkPatterns(CComPtr<IFeature> swFeature, IModelDoc2* swModel, const CComBSTR &sTypeName) {
+	const CComBSTR sLocalPatternTypeName(L"LocalLPattern");
+	if (VarBstrCmp(sTypeName, sLocalPatternTypeName, 0, 0) == 1) {
+		LinPattFuncs<ILocalLinearPatternFeatureData> pattfuncs;
+		procPattern<ILocalLinearPatternFeatureData>(swFeature, swModel, &pattfuncs);
+		return;
+		/******  
+		Above line should do everything that is below. Can delete below when sure all is OK
+		Also need if for circular pattern
+		*/
+		struct IDispatch *pPatternDisp;
+		ILocalLinearPatternFeatureData *linpattern;
+		hres = swFeature->GetDefinition(&pPatternDisp);
+		if (hres == S_OK && pPatternDisp) {
+			cout << "Found Local Linear Pattern definition " << endl;
+			hres = pPatternDisp->QueryInterface(__uuidof(ILocalLinearPatternFeatureData), reinterpret_cast<void**>(&linpattern));
+			pPatternDisp->Release();
+			if (hres == S_OK && linpattern) {
+				cout << "Found Local Linear Pattern! " << endl;
+				VARIANT_BOOL accessOk = VARIANT_FALSE;
+				hres = linpattern->AccessSelections(swModel, NULL, &accessOk);
+				if (hres == S_OK && accessOk == VARIANT_TRUE) {
+					double xspacing = 0;
+					hres = linpattern->get_D1Spacing(&xspacing);
+					cout << "D1 spacing " << xspacing << endl;
+					double zspacing = 0;
+					hres = linpattern->get_D2Spacing(&zspacing);
+					cout << "D2 spacing " << zspacing << endl;
+					VARIANT_BOOL revDir = VARIANT_FALSE;
+					hres = linpattern->get_D1ReverseDirection(&revDir);
+					cout << "D1 reverse direction " << revDir << endl;
+					long axisType = -1;
+					hres = linpattern->GetD1AxisType(&axisType);
+					cout << "D1 axis type is " << axisType << endl;
+					hres = linpattern->get_D2ReverseDirection(&revDir);
+					cout << "D2 reverse direction " << revDir << endl;
+					hres = linpattern->GetD2AxisType(&axisType);
+					cout << "D2 axis type is " << axisType << endl;
+					getTransfDisplace(linpattern, xspacing, zspacing);
+					long cnt = -1;
+					hres = linpattern->GetSeedComponentCount(&cnt);
+					cout << "Seed component count is " << cnt << endl;
+					if (cnt > 0) {
+						getSeedComps(linpattern);
+					}
+					hres = linpattern->GetSkippedItemCount(&cnt);
+					cout << "Skipped item count is " << cnt << endl;
+					hres = linpattern->get_D1TotalInstances(&cnt);
+					cout << "D1 instances is " << cnt << endl;
+					long d2Cnt = -1;
+					hres = linpattern->get_D2TotalInstances(&d2Cnt);
+					cout << "D2 instances is " << d2Cnt << endl;
+					int totInstances = cnt + d2Cnt - 1; // Don't count seed instance
+					cout << "Instance total = " << totInstances << endl;
+					struct IDispatch *RefAxisDisp;
+					hres = linpattern->get_D1Axis(&RefAxisDisp);
+					if (hres == S_OK && RefAxisDisp) {
+						UINT typeCnt = -1;
+						hres = RefAxisDisp->GetTypeInfoCount(&typeCnt);
+						cout << "type count = " << typeCnt << " hres " << hres << endl;
+						CComPtr<ITypeInfo> spTypeInfo;
+						hres = RefAxisDisp->GetTypeInfo(0, 0, &spTypeInfo);
+						if (hres == S_OK && spTypeInfo) {
+							CComBSTR sITypeName, sDocName, sHelp, sFile;
+							DWORD context = -1;
+							hres = spTypeInfo->GetDocumentation(-1, &sITypeName, &sDocName, &context, &sFile);
+							printbstr("type name ", sITypeName);
+							printbstr("doc name ", sDocName);
+							printbstr("file name ", sFile);
+						}
+						else cout << "No typeinfo, res " << hres << " ptr " << spTypeInfo << endl;
+						IID unused = IID_NULL;
+						CComBSTR refName(L"axis");
+						DISPID dispID;
+						hres = RefAxisDisp->GetIDsOfNames(unused, &refName, 1, GetUserDefaultLCID(), &dispID);
+						cout << "getids hres = " << std::hex << hres << " dispid = " << dispID << endl;
+						CComPtr<IRefAxis> refAxis;
+						// hres = RefAxisDisp->QueryInterface(IID_IRefAxis, reinterpret_cast<void**>(&refAxis));
+						// RefAxisDisp->Release();
+						if (false) {
+							double *axisArray = new double[7];
+							hres = refAxis->IGetRefAxisParams(axisArray);
+							cout << "Found ref axis feature data\n";
+							if (hres == S_OK) {
+								coords startPt(axisArray[0], axisArray[1], axisArray[2]);
+								coords endPt(axisArray[3], axisArray[4], axisArray[5]);
+								cout << "start and end pts" << startPt << " " << endPt << endl;
+							}
+						}
+						else cout << "Couldn't get refaxis " << std::hex << hres << " ptr " << refAxis << endl;
+					}
+					linpattern->ReleaseSelectionAccess();
+				}
+				else cout << "Can't access selections\n";
+			}
+			else cout << "Failed to get local linear pattern retval = " << hres << " ptr = " << linpattern << endl;
+		}
+		else cout << "Failed to get local linear pattern definition retval = " << hres << " ptr = " << pPatternDisp << endl;
+	}
+}
+
 
 void TraverseFeatureManagerDesignTree(IModelDoc2* swModel, ISldWorks* swApp)
 // Traverse FeatureManager design tree to get the
@@ -3819,97 +4054,7 @@ void TraverseFeatureManagerDesignTree(IModelDoc2* swModel, ISldWorks* swApp)
 						}
 						else {
 							cout << "Failed to get selected component retval = " << std::hex << hres << " ptr = " << swSelectedComponent << endl;
-							const CComBSTR sLocalPatternTypeName(L"LocalLPattern");
-							if (VarBstrCmp(sTypeName, sLocalPatternTypeName, 0, 0) == 1) {
-								struct IDispatch *pPatternDisp;
-								ILocalLinearPatternFeatureData *linpattern;
-								hres = swFeature->GetDefinition(&pPatternDisp);
-								if (hres == S_OK && pPatternDisp) {
-									cout << "Found Local Linear Pattern definition " << endl;
-									hres = pPatternDisp->QueryInterface(__uuidof(ILocalLinearPatternFeatureData), reinterpret_cast<void**>(&linpattern));
-									pPatternDisp->Release();
-									if (hres == S_OK && linpattern) {
-										cout << "Found Local Linear Pattern! " << endl;
-										VARIANT_BOOL accessOk = VARIANT_FALSE;
-										hres = linpattern->AccessSelections(swModel, NULL, &accessOk);
-										if (hres == S_OK && accessOk == VARIANT_TRUE) {
-											double xspacing = 0;
-											hres = linpattern->get_D1Spacing(&xspacing);
-											cout << "D1 spacing " << xspacing << endl;
-											double zspacing = 0;
-											hres = linpattern->get_D2Spacing(&zspacing);
-											cout << "D2 spacing " << zspacing << endl;
-											VARIANT_BOOL revDir = VARIANT_FALSE;
-											hres = linpattern->get_D1ReverseDirection(&revDir);
-											cout << "D1 reverse direction " << revDir << endl;
-											long axisType = -1;
-											hres = linpattern->GetD1AxisType(&axisType);
-											cout << "D1 axis type is " << axisType << endl;
-											hres = linpattern->get_D2ReverseDirection(&revDir);
-											cout << "D2 reverse direction " << revDir << endl;
-											hres = linpattern->GetD2AxisType(&axisType);
-											cout << "D2 axis type is " << axisType << endl;
-											assembly.getTransfDisplace(linpattern, xspacing, zspacing);
-											long cnt = -1;
-											hres = linpattern->GetSeedComponentCount(&cnt);
-											cout << "Seed component count is " << cnt << endl;
-											if (cnt > 0) {
-												assembly.getSeedComps(linpattern);
-											}
-											hres = linpattern->GetSkippedItemCount(&cnt);
-											cout << "Skipped item count is " << cnt << endl;
-											hres = linpattern->get_D1TotalInstances(&cnt);
-											cout << "D1 instances is " << cnt << endl;
-											long d2Cnt = -1;
-											hres = linpattern->get_D2TotalInstances(&d2Cnt);
-											cout << "D2 instances is " << d2Cnt << endl;
-											int totInstances = cnt + d2Cnt - 1; // Don't count seed instance
-											cout << "Instance total = " << totInstances << endl;
-											struct IDispatch *RefAxisDisp;
-											hres = linpattern->get_D1Axis(&RefAxisDisp);
-											if (hres == S_OK && RefAxisDisp) {
-												UINT typeCnt = -1;
-												hres = RefAxisDisp->GetTypeInfoCount(&typeCnt);
-												cout << "type count = " << typeCnt << " hres " << hres << endl;
-												CComPtr<ITypeInfo> spTypeInfo;
-												hres = RefAxisDisp->GetTypeInfo(0, 0, &spTypeInfo);
-												if (hres == S_OK && spTypeInfo) {
-													CComBSTR sITypeName, sDocName, sHelp, sFile;
-													DWORD context = -1;
-													hres = spTypeInfo->GetDocumentation(-1, &sITypeName, &sDocName, &context, &sFile);
-													printbstr("type name ", sITypeName);
-													printbstr("doc name ", sDocName);
-													printbstr("file name ", sFile);
-												}
-												else cout << "No typeinfo, res " << hres << " ptr " << spTypeInfo << endl;
-												IID unused = IID_NULL;
-												CComBSTR refName(L"axis");
-												DISPID dispID;
-												hres = RefAxisDisp->GetIDsOfNames(unused, &refName, 1, GetUserDefaultLCID(), &dispID);
-												cout << "getids hres = " << std::hex << hres << " dispid = " << dispID << endl;
-												CComPtr<IRefAxis> refAxis;
-												// hres = RefAxisDisp->QueryInterface(IID_IRefAxis, reinterpret_cast<void**>(&refAxis));
-												// RefAxisDisp->Release();
-												if (false) {
-													double *axisArray = new double[7];
-													hres = refAxis->IGetRefAxisParams(axisArray);
-													cout << "Found ref axis feature data\n";
-													if (hres == S_OK) {
-														coords startPt(axisArray[0], axisArray[1], axisArray[2]);
-														coords endPt(axisArray[3], axisArray[4], axisArray[5]);
-														cout << "start and end pts" << startPt << " " << endPt << endl;
-													}
-												}
-												else cout << "Couldn't get refaxis " << std::hex << hres << " ptr " << refAxis << endl;
-											}
-											linpattern->ReleaseSelectionAccess();
-										}
-										else cout << "Can't access selections\n";
-									}
-									else cout << "Failed to get local linear pattern retval = " << hres << " ptr = " << linpattern << endl;
-								}
-								else cout << "Failed to get local linear pattern definition retval = " << hres << " ptr = " << pPatternDisp << endl;
-							}
+							assembly.chkPatterns(swFeature, swModel, sTypeName);
 						}
 						long deselOK = 0;
 						long indexList[1] = { 1 };
