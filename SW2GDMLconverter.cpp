@@ -907,13 +907,19 @@ static ofstream gdmlout;
 
 
 class xmlElem {
+protected:
+	enum unitTypes {LEN_UNIT, POS_UNIT, NO_UNIT};
+
 public:
-	xmlElem() {}
+	xmlElem() : printUnits(NO_UNIT)
+	{}
 
 	const char *openElem(const char *label = NULL, const char *attrib = NULL, bool separate = false) {
 		outputStr = "<";
 		if (label != NULL) {
 			outputStr += label;
+			if (label == "position")
+				printUnits = POS_UNIT;
 		}
 		if (attrib != NULL) {
 			outputStr += attrib;
@@ -923,6 +929,11 @@ public:
 		return (outputStr.c_str());
 	}
 
+	const char *openLenElem(const char *label) { // Begin an element that includes a length
+		printUnits = LEN_UNIT;
+		return (openElem(label));
+	}
+
 	const char *openSepElem(const char *label = NULL, const char *attrib = NULL) {
 		return (openElem(label, attrib, true));
 	}
@@ -930,6 +941,13 @@ public:
 	const char *closeElem(const char *label = NULL, bool separate = false) {
 		if (separate)
 			outputStr = "</";
+		else if (printUnits != NO_UNIT) {
+			outputStr = " ";
+			if (printUnits == LEN_UNIT)
+				outputStr += "l";
+			outputStr += "unit=\"m\"/"; // SolidWorks defaults to meter units
+			printUnits = NO_UNIT;
+		}
 		else outputStr = "/";
 		if (label != NULL)
 			outputStr += label;
@@ -964,6 +982,7 @@ public:
 	}
 protected:
 	string outputStr;
+	unitTypes printUnits;
 };
 
 const char *const indent1 = " ", *const indent2 = "  ", *const indent3 = "   ";
@@ -2515,7 +2534,7 @@ static void getFaceDistances(int faceIndList[20], int listSz, LPDISPATCH *srcptr
 		}
 		const char *const name = nameIncr(CONE_ID);
 		xmlElem beginEnd, attrib1, attrib2;
-		gdmlout << indent1 << beginEnd.openElem("cone") << attrib1.attribute("name", name) << attrib2.attribute("z", cone1->height);
+		gdmlout << indent1 << beginEnd.openLenElem("cone") << attrib1.attribute("name", name) << attrib2.attribute("z", cone1->height);
 		gdmlout << attrib1.attribute("rmin1", inLgRadius) << attrib2.attribute("rmin2", inSmRadius);
 		gdmlout << attrib1.attribute("rmax1", outLgRadius) << attrib2.attribute("rmax2", outSmRadius);
 		gdmlout << attrib1.attribute("deltaphi", "TWOPI") << beginEnd.closeElem() << endl;
@@ -2542,7 +2561,7 @@ static void getFaceDistances(int faceIndList[20], int listSz, LPDISPATCH *srcptr
 			smRadius = 0;
 		const char *const name = nameIncr(CYLINDER_ID);
 		xmlElem beginEnd, attrib1, attrib2;
-		gdmlout << indent1 << beginEnd.openElem("tube") << attrib1.attribute("name", name) << attrib2.attribute("z", cyl1->length);
+		gdmlout << indent1 << beginEnd.openLenElem("tube") << attrib1.attribute("name", name) << attrib2.attribute("z", cyl1->length);
 		gdmlout << attrib1.attribute("rmin", smRadius) << attrib2.attribute("rmax", lgRadius);
 		gdmlout << attrib1.attribute("deltaphi", cyl1->angle) << beginEnd.closeElem() << endl;
 		return (name);
@@ -2573,7 +2592,7 @@ static void getFaceDistances(int faceIndList[20], int listSz, LPDISPATCH *srcptr
 			 smRadius = 0;
 		 const char *const name = nameIncr(TORUS_ID);
 		 xmlElem beginEnd, attrib1, attrib2;
-		 gdmlout << indent1 << beginEnd.openElem("torus") << attrib1.attribute("name", name) << attrib2.attribute("rtor", torus1->majorRadius);
+		 gdmlout << indent1 << beginEnd.openLenElem("torus") << attrib1.attribute("name", name) << attrib2.attribute("rtor", torus1->majorRadius);
 		 gdmlout << attrib1.attribute("rmin", smRadius) << attrib2.attribute("rmax", lgRadius);
 		 gdmlout << attrib1.attribute("startphi", 0.0);
 		 gdmlout << attrib1.attribute("deltaphi", torus1->angle) << beginEnd.closeElem() << endl;
@@ -2603,7 +2622,7 @@ static void getFaceDistances(int faceIndList[20], int listSz, LPDISPATCH *srcptr
 			 angle = disk2->angle;
 		 if (newThick > MIN_THICKNESS && newThick < 0.7)
 			 thickness = newThick;
-		 gdmlout << indent1 << beginEnd.openElem("tube") << attrib1.attribute("name", name);
+		 gdmlout << indent1 << beginEnd.openLenElem("tube") << attrib1.attribute("name", name);
 		 gdmlout << attrib1.attribute("rmin", inRad) << attrib2.attribute("rmax", outRad);
 		 gdmlout << attrib1.attribute("deltaphi", angle) << attrib2.attribute("z", thickness) << beginEnd.closeElem() << endl;
 		 return (name);
@@ -2619,7 +2638,7 @@ static void getFaceDistances(int faceIndList[20], int listSz, LPDISPATCH *srcptr
 	 if (board1 != NULL && board2 != NULL) {
 		 const char *const name = nameIncr(BOARD_ID);
 		 xmlElem beginEnd, attrib1, attrib2;
-		 gdmlout << indent1 << beginEnd.openElem("box") << attrib1.attribute("name", name);
+		 gdmlout << indent1 << beginEnd.openLenElem("box") << attrib1.attribute("name", name);
 		 // y axis appears to be default long axis
 		 gdmlout << attrib1.attribute("x", board1->width) << attrib2.attribute("y", board1->length);
 		 gdmlout << attrib1.attribute("z", MIN_THICKNESS) << beginEnd.closeElem() << endl;
@@ -2636,7 +2655,7 @@ static void getFaceDistances(int faceIndList[20], int listSz, LPDISPATCH *srcptr
 	 if (ellip1 != NULL && ellip2 != NULL) {
 		 const char *const name = nameIncr(S_REVOLVE_ID);
 		 xmlElem beginEnd, attrib1, attrib2;
-		 gdmlout << indent1 << beginEnd.openElem("ellipsoid") << attrib1.attribute("name", name) << attrib2.attribute("ax", ellip1->ax);
+		 gdmlout << indent1 << beginEnd.openLenElem("ellipsoid") << attrib1.attribute("name", name) << attrib2.attribute("ax", ellip1->ax);
 		 gdmlout << attrib1.attribute("by", ellip1->by) << attrib2.attribute("cz", ellip1->cz);
 		 gdmlout << attrib1.attribute("zcut1", ellip1->zcutLow) << beginEnd.closeElem() << endl;
 		 return (name);
@@ -3129,7 +3148,9 @@ void AssemblyInfo::showMate(IMate2 *matePtr, coords &antiAlignTot, int &alignCnt
 												cout << "Overall rotation set to = " << overallRot << endl;
 												adjustDisplace = false;
 											} else location = location * -1.0;
-										} else if (mateCnt < 3 && overallRot.length() == 0 && direction.length() > 0 && direction1.length() > 0) {
+										} else if (mateCnt < 3 && overallRot.length() == 0 && direction.length() > 0 && direction1.length() > 0 &&
+											!(direction == xaxis || direction == xaxisminus) && !(direction1 == xaxis || direction1 == xaxisminus)) {
+											// Note +-x axis pair is a special case handled below
 											// coords chkAxis = direction * -1.0;
 											// if (!(chkAxis == direction1)) { // Make sure directions are not trivial flip
 												// Axis flip can orient parts in reverse of correct direction
@@ -3141,6 +3162,7 @@ void AssemblyInfo::showMate(IMate2 *matePtr, coords &antiAlignTot, int &alignCnt
 											// else cout << "Ignoring trivial axis flip " << direction << " into " << direction1 << endl;
 										}
 										antiAlignTot = antiAlignTot + location;
+										// cout << "aatot value " << antiAlignTot << endl;
 									}
 									if (index == 0) {
 										direction1 = direction;
@@ -3148,8 +3170,8 @@ void AssemblyInfo::showMate(IMate2 *matePtr, coords &antiAlignTot, int &alignCnt
 										radius1 = meRadius;
 									}
 									else {
-										if (meRadius > 0) {	// First radius seems to be an additional displacement
-											if (location == location1) {
+										if (align != swMateAlignANTI_ALIGNED && meRadius > 0) {	// First radius seems to be an additional displacement
+											if (location == location1) {	// but doesn't seem to work for anti-aligned
 												if (meRadiiSame) {
 													meRadiiSame = approxEqual(meRadius, radius1);
 													if (meRadiiSame) { // Only adjust if radii were consistent for mate pairs
@@ -3166,9 +3188,9 @@ void AssemblyInfo::showMate(IMate2 *matePtr, coords &antiAlignTot, int &alignCnt
 										if (overallRot.length() == 0 && (direction == xaxis || direction == xaxisminus)) {
 											if (direction1 == xaxisminus || (location1.length() > 0 && direction1 == xaxis)) {
 												// Pair of +-x axes (same or different) seems to indicate x should be rotated into -z
-												// but only if mate isn't empty (first seen in SolidWorks 2014
+												// but only if mate isn't empty (first seen in SolidWorks 2014)
 												coords begAxis = xaxis;
-												if (mateInd > 1)	// 3rd mate seems to indicate should rotate from y instead of x
+												if (mateInd > 1 || meRadius > 0)	// 3rd mate or meRadius seems to indicate should rotate from y instead of x
 													begAxis = yaxis;
 												overallRot = rotAnglesZYX(begAxis, zaxis);
 												cout << "Overall rotation set to = " << overallRot << " because of +-x pair " << endl;
@@ -3302,7 +3324,7 @@ void AssemblyInfo::getMates(IComponent2 *swSelectedComponent) {
 									betterDisplace = ind->first;
 								}
 							}
-							if (rank > 3) {
+							if (rank > 3 || (rank == 3 && nMateCount == 2)) {
 								displace = betterDisplace;
 								// cout << "Displacement replaced by rank " << rank << endl;
 							}
@@ -3629,7 +3651,7 @@ void AssemblyInfo::getRelatedComps(IComponent2 *baseComp) {
 					}
 					if ((*it)->overallRot.length() == 0)
 						(*it)->overallRot = overallRot;		// Set from seed component
-					if ((*it)->displace.length() == 0 && pattDisplaceList.size() > patternCnt)
+					if ((*it)->displace.length() == 0 && patternCnt >= 0 && pattDisplaceList.size() > patternCnt)
 						(*it)->displace = pattDisplaceList[patternCnt];
 				}
 			}	// end if match path name
@@ -3995,8 +4017,8 @@ void TraverseFeatureManagerDesignTree(IModelDoc2* swModel, ISldWorks* swApp)
 
 	xmlElem beginEnd, attrib1, attrib2, attrib3;
 	gdmlout << beginEnd.openSepElem("solids") << endl;
-	gdmlout << indent1 << beginEnd.openElem("box") << attrib1.attribute("name", "WorldBox");
-	gdmlout << attrib1.attribute("x", "10000.0") << attrib2.attribute("y", "10000.0") << attrib3.attribute("z", "10000.0");
+	gdmlout << indent1 << beginEnd.openLenElem("box") << attrib1.attribute("name", "WorldBox");
+	gdmlout << attrib1.attribute("x", "100.0") << attrib2.attribute("y", "100.0") << attrib3.attribute("z", "100.0");
 	gdmlout << beginEnd.closeElem() << endl;
 	AssemblyInfo assembly;
 	do	{
