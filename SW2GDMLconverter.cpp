@@ -40,6 +40,21 @@ enum surfTypeIDs {
 const char *const surftypes[] = { "plane", "cylinder", "cone", "sphere", "torus", "bsurf", "blend", "offset", "extrusion",
 "s-revolve", "vol", "pos", "rot", "subt", "disk", "board" };
 
+
+// The select types must be in correct order
+const char *const selectTypes[] = { "swSelNOTHING", "swSelEDGES", "swSelFACES", "swSelVERTICES", "swSelDATUMPLANES", "swSelDATUMAXES",
+		"swSelDATUMPOINTS", "swSelOLEITEMS", "swSelATTRIBUTES", "swSelSKETCHES", "swSelSKETCHSEGS", "swSelSKETCHPOINTS" };
+
+static const int MAX_NUM_SEL_TYPES = 12;
+
+static const char *const selectTypeStr(long selTypeID) {
+	if (selTypeID < 0 || selTypeID >= MAX_NUM_SEL_TYPES)
+		selTypeID = 0;
+	return (selectTypes[selTypeID]);
+}
+
+
+
 static const double MIN_THICKNESS = 0.0005;
 static const double MIN_ABS_DIFF = 0.0005;
 
@@ -144,6 +159,11 @@ public:
 		return (approxEqual(x, operand.x) &&
 			approxEqual(y, operand.y) &&
 			approxEqual(z, operand.z));
+	}
+
+	bool operator!=(const coords &operand) const
+	{
+		return ((*this == operand) == false);
 	}
 
 	coords operator*(double factor) {
@@ -825,6 +845,10 @@ public:
 	virtual double getSpacing(T *patternType, AssemblyInfo &assembly) override;
 };
 
+static const coords zaxis(0.0, 0.0, 1.0),
+yaxis(0.0, 1.0, 0.0), xaxis(1.0, 0.0, 0.0),
+xaxisminus(-1.0, 0.0, 0.0), zaxisminus(0.0, 0.0, -1.0),
+origin(0, 0, 0);
 
 
 class AssemblyInfo {
@@ -843,7 +867,7 @@ public:
 	void outputHole(const long baseInd, const long holeInd);
 	void breakUpFaces(shapeList *sList);
 	void findHoles(shapeList *sList);
-	void getLineInfo(CComPtr<ICurve> curveptr, double sideLen);
+	bool getLineInfo(CComPtr<ICurve> curveptr, sideInfo &thisSide);
 	void calcBoard();
 	void getInitRot(const int index);
 	coords getStartAxis(IEdge *const edgeptr, const coords &center, const coords &axis, double circRad, coords &endAxis);
@@ -863,6 +887,13 @@ public:
 	void chkPatterns(CComPtr<IFeature> swFeature, IModelDoc2* swModel, const CComBSTR &sTypeName);
 	template<typename T>
 	void procPattern(CComPtr<IFeature> swFeature, IModelDoc2* swModel, PatternFuncs<T> *pattfuncs);
+	void doClosestAlign(const long index, coords &newAxis, const coords &direction);
+	void doAligned(int &alignCnt, bool &adjustDisplace, coords &location, const long index,
+		const long mateRefType, const int mateCnt, const long mateType, const coords &direction);
+	void doAntiAligned(bool &adjustDisplace, coords &location, const long index,
+		const long mateRefType, const int mateCnt, const coords &direction, const coords &direction1);
+	void getMateFaces(IMate2 *const matePtr) const;
+	void calcMateDisplace();
 
 	vector<GenericSurf *> surfArray;
 	int surfArrayInd;
@@ -881,20 +912,34 @@ protected:
 	vector<partDesc> partArray;
 	centerSurfIndArray edgeList;
 	vector<pair<int, int>> holeList;
-	coords displace;
-	coords overallRot;
-	string overallRotCmpNmStr;
+	class mateInfoStruc {
+	public:
+		void clear() {
+			displace = origin; // Clear values from previous component
+			overallRot = origin;
+			overallRotCmpNmStr.clear();
+			origpos = origin;
+			origdir = origin;
+			displpos = origin;
+			displdir = origin;
+			edgeSet = false;
+		}
+
+		coords displace;
+		coords overallRot;
+		string overallRotCmpNmStr;
+		coords origpos, origdir;
+		coords displpos, displdir;
+		bool edgeSet;
+		int startIndex;
+
+	} mateInfo;
+
 };
 
 VARIANT_BOOL retVal = VARIANT_FALSE;
 
 HRESULT hres = NOERROR, hres2 = NOERROR;
-
-static const coords zaxis(0.0, 0.0, 1.0),
-	yaxis(0.0, 1.0, 0.0), xaxis(1.0, 0.0, 0.0),
-	xaxisminus(-1.0, 0.0, 0.0), zaxisminus(0.0, 0.0, -1.0),
-	origin(0, 0, 0);
-
 
 const char *const cylname = "tube", *const conename = "cone";
 
@@ -1788,7 +1833,7 @@ coords AssemblyInfo::getbcurve(CComPtr<ICurve> curveptr) {
 }
 
 
-void AssemblyInfo::getLineInfo(CComPtr<ICurve> curveptr, double sideLen) {
+bool AssemblyInfo::getLineInfo(CComPtr<ICurve> curveptr, sideInfo &thisSide) {
 	VARIANT lineParams;
 	VariantInit(&lineParams);
 	hres = curveptr->get_LineParams(&lineParams);
@@ -1800,15 +1845,14 @@ void AssemblyInfo::getLineInfo(CComPtr<ICurve> curveptr, double sideLen) {
 			coords lineDir(paramArray[paramBegin + 3], paramArray[paramBegin + 4], paramArray[paramBegin + 5]);
 			cout << "Line root " << lineRoot << endl;
 			cout << "Line direction " << lineDir << endl;
-			sideInfo thisSide;
 			thisSide.point = lineRoot;
 			thisSide.lineDir = lineDir;
-			thisSide.length = sideLen;
-			surfArray[surfArrayInd]->sideList.push_back(thisSide);
+			return (true);
 		}
 		else cout << "Too few line parameters: " << paramLim << endl;
 	}
 	else cout << "Can't get line params\n";
+	return(false);
 }
 
 
@@ -1892,6 +1936,24 @@ static coords getBoxVertex(sideInfo &side, const coords &approxCenter) {
 }
 
 
+void AssemblyInfo::calcMateDisplace()
+{
+	coords posNoDispl = mateInfo.origpos;
+	// Apply mate rotation
+	posNoDispl = rotVecZYX(posNoDispl, mateInfo.overallRot);
+	// Calc mate displacement from difference of final pos and rotated position
+	mateInfo.displace = mateInfo.displpos - posNoDispl;
+	cout << "Edge calculated mate displacement = " << mateInfo.displace << endl;
+
+	// Reset displacement for all previous surfaces affected by this mate
+	for (int ind = mateInfo.startIndex + 1; ind <= surfArrayInd; ++ind) {
+		surfArray[ind]->displace = mateInfo.displace;
+		cout << "Resetting displace for surface " << ind << " to " << mateInfo.displace << endl;
+	}
+	mateInfo.edgeSet = false; // Don't calculate displace again for this mate
+}
+
+
 void AssemblyInfo::calcBoard() {
 	// Only considered four-sided boards for now
 	BoardSurf *boardptr = surfArray[surfArrayInd]->boardPtr();
@@ -1901,6 +1963,8 @@ void AssemblyInfo::calcBoard() {
 		coords approxCenter = findCenter(surfArray[surfArrayInd]->sideList);
 		// bool foundSides = false;
 		vector< vector<sideInfo> > sideLists;
+		bool hasorigin[2];
+		hasorigin[0] = hasorigin[1] = false;
 		for (int ind1 = 0; ind1 < 2; ++ind1) {
 			int ind2 = ind1 + 2;
 			// Construct the other two points by following the line direction a distance equal to the line length.
@@ -1918,59 +1982,75 @@ void AssemblyInfo::calcBoard() {
 			ind3 += 2;
 			testList[ind3] = surfArray[surfArrayInd]->sideList[ind3];
 			testList[ind3].point = pt2;
+			cout << "Test list\n";
+			for (int ind = 0; ind < 4; ++ind) {
+				cout << testList[ind].point << " len = " << testList[ind].length;
+				cout << " dir = " << testList[ind].lineDir << endl;
+				if (testList[ind].point == origin)
+					hasorigin[ind1] = true;
+			}
 			sideLists.push_back(testList);
 			/*
 			for (int ind2 = ind1 + 1; ind2 < 4 && foundSides == false; ++ind2) {
-				coords diag = surfArray[surfArrayInd]->sideList[ind2].point - surfArray[surfArrayInd]->sideList[ind1].point;
-				cout << "Correct hypotenuse and calculated val = " << hypotenuse << " " << diag.length() << endl;
-				if (checkZero(diag.length() - hypotenuse) == 0.0) {
-					cout << "Found good hypo " << endl;
-					coords lineDir1 = surfArray[surfArrayInd]->sideList[ind1].lineDir;
-					coords lineDir2 = surfArray[surfArrayInd]->sideList[ind2].lineDir;
-					if (dotProd(diag, lineDir1) < 0)
-						lineDir1 = lineDir1 * -1.0; // Reverse line direction
-					if (dotProd(diag, lineDir2) > 0) // lineDir2 should go in opposite direction
-						lineDir2 = lineDir2 * -1.0; // Reverse line direction
-					// Construct the other two points by following the line direction a distance equal to the line length.
-					coords pt1 = lineDir1 * surfArray[surfArrayInd]->sideList[ind1].length;
-					pt1 = pt1 + surfArray[surfArrayInd]->sideList[ind1].point;
-					coords pt2 = lineDir2 * surfArray[surfArrayInd]->sideList[ind2].length;
-					pt2 = pt2 + surfArray[surfArrayInd]->sideList[ind2].point;
-					bool usedPt1 = false;
-					for (int ind3 = 0; ind3 < 4; ++ind3) {
-						if (ind3 != ind1 && ind3 != ind2) {
-							if (usedPt1 == false) {
-								cout << "Resetting " << surfArray[surfArrayInd]->sideList[ind3].point << " to " << pt1 << endl;
-								surfArray[surfArrayInd]->sideList[ind3].point = pt1;
-								usedPt1 = true;
-							}
-							else surfArray[surfArrayInd]->sideList[ind3].point = pt2;
-						}
-					}
-					foundSides = true;
-				}
+			coords diag = surfArray[surfArrayInd]->sideList[ind2].point - surfArray[surfArrayInd]->sideList[ind1].point;
+			cout << "Correct hypotenuse and calculated val = " << hypotenuse << " " << diag.length() << endl;
+			if (checkZero(diag.length() - hypotenuse) == 0.0) {
+			cout << "Found good hypo " << endl;
+			coords lineDir1 = surfArray[surfArrayInd]->sideList[ind1].lineDir;
+			coords lineDir2 = surfArray[surfArrayInd]->sideList[ind2].lineDir;
+			if (dotProd(diag, lineDir1) < 0)
+			lineDir1 = lineDir1 * -1.0; // Reverse line direction
+			if (dotProd(diag, lineDir2) > 0) // lineDir2 should go in opposite direction
+			lineDir2 = lineDir2 * -1.0; // Reverse line direction
+			// Construct the other two points by following the line direction a distance equal to the line length.
+			coords pt1 = lineDir1 * surfArray[surfArrayInd]->sideList[ind1].length;
+			pt1 = pt1 + surfArray[surfArrayInd]->sideList[ind1].point;
+			coords pt2 = lineDir2 * surfArray[surfArrayInd]->sideList[ind2].length;
+			pt2 = pt2 + surfArray[surfArrayInd]->sideList[ind2].point;
+			bool usedPt1 = false;
+			for (int ind3 = 0; ind3 < 4; ++ind3) {
+			if (ind3 != ind1 && ind3 != ind2) {
+			if (usedPt1 == false) {
+			cout << "Resetting " << surfArray[surfArrayInd]->sideList[ind3].point << " to " << pt1 << endl;
+			surfArray[surfArrayInd]->sideList[ind3].point = pt1;
+			usedPt1 = true;
+			}
+			else surfArray[surfArrayInd]->sideList[ind3].point = pt2;
+			}
+			}
+			foundSides = true;
+			}
 			} // end for
 			*/
 		} // end for ind1
 		coords center1 = findCenter(sideLists[0]);
 		coords center2 = findCenter(sideLists[1]);
+		cout << "approx center " << approxCenter << " center1 " << center1 << " center2 " << center2 << endl;
 		coords dist1 = center1 - approxCenter;
 		coords dist2 = center2 - approxCenter;
 		vector<sideInfo> &goodList = sideLists[0];
-		// cout << "distance 1, distance 2 = " << dist1.length() << " " << dist2.length() << endl;
-		if (dist1.length() > dist2.length())
+		cout << "distance 1, distance 2 = " << dist1.length() << " " << dist2.length() << endl;
+		// Don't trust side list that includes origin because it seems to be missing position info
+		if ((hasorigin[0] && hasorigin[1] == false) || dist1.length() > dist2.length())
 			goodList = sideLists[1];
 		coords center;
 		// std::cout << " Four points are ";
+		bool matchMate = false;
 		for (int ind = 0; ind < 4; ++ind) {
 			surfArray[surfArrayInd]->sideList[ind] = goodList[ind];
 			cout << surfArray[surfArrayInd]->sideList[ind].point << " len = " << surfArray[surfArrayInd]->sideList[ind].length;
 			cout << " dir = " << surfArray[surfArrayInd]->sideList[ind].lineDir << endl;
 			center = center + surfArray[surfArrayInd]->sideList[ind].point;
+			if (mateInfo.edgeSet && matchMate == false) { // Check if edge matches mate
+				matchMate = ((surfArray[surfArrayInd]->sideList[ind].point == mateInfo.origpos) &&
+					(surfArray[surfArrayInd]->sideList[ind].lineDir == mateInfo.origdir));
+			}
 		}
 		center = center * 0.25;
 		std::cout << "Center is " << center << endl;
 		surfArray[surfArrayInd]->position = center;
+		if (matchMate)
+			calcMateDisplace();
 		int index = 0;
 		if (surfArray[surfArrayInd]->sideList[0].length > surfArray[surfArrayInd]->sideList[1].length) {
 			index = 1;
@@ -2199,8 +2279,12 @@ void AssemblyInfo::getEdgeDist(IFace2 *const faceptr, CComPtr<IMeasure> &mymeasu
 						hres = curveptr->IsLine(&retVal);
 						bool goodLine = (hres == S_OK && retVal);
 						// cout << "IsLine: " << goodLine << endl;
-						if (goodLine)
-							getLineInfo(curveptr, sideLen);
+						if (goodLine) {
+							sideInfo thisSide;
+							thisSide.length = sideLen;
+							if (getLineInfo(curveptr, thisSide))
+								surfArray[surfArrayInd]->sideList.push_back(thisSide);
+						}
 						// hres = curveptr->IsTrimmedCurve(&retVal);
 						// cout << "IsTrimmedCurve: " << (hres == S_OK && retVal) << endl;
 						hres = curveptr->IsCircle(&retVal);
@@ -2370,10 +2454,10 @@ void AssemblyInfo::showFaceDetails(LPDISPATCH *srcptr, int srcindex, double *rad
 					++surfArrayInd;
 					cout << "surf name is " << surfArray[surfArrayInd]->surfName() << endl;
 					*radius = surfArray[surfArrayInd]->showSurfParams(this);
-					surfArray[surfArrayInd]->displace = displace;
-					cout << "Setting index " << surfArrayInd << " to displace " << displace << endl;
-					if (overallRotCmpNmStr.size() == 0 || overallRotCmpNmStr.compare(compNameStr) == 0)
-						surfArray[surfArrayInd]->overallRot = overallRot;
+					surfArray[surfArrayInd]->displace = mateInfo.displace;
+					cout << "Setting index " << surfArrayInd << " to displace " << mateInfo.displace << endl;
+					if (mateInfo.overallRotCmpNmStr.size() == 0 || mateInfo.overallRotCmpNmStr.compare(compNameStr) == 0)
+						surfArray[surfArrayInd]->overallRot = mateInfo.overallRot;
 					surfArray[surfArrayInd]->matNameStr = matNameStr;
 					surfArray[surfArrayInd]->compNameStr = compNameStr;
 					surfArray[surfArrayInd]->pathNameStr = pathNameStr; 
@@ -3041,6 +3125,20 @@ const char *getTypeStr(long typeNum) {
 		return ("coordinate");
 	case swMateANGLE:
 		return ("angle");
+	case swMateCAMFOLLOWER:
+		return ("camfollower");
+	case swMateCONCENTRIC:
+		return ("concentric");
+	case swMateDISTANCE:
+		return ("distance");
+	case swMatePARALLEL:
+		return ("parallel");
+	case swMatePERPENDICULAR:
+		return ("perpendicular");
+	case swMateSYMMETRIC:
+		return ("symmetric");
+	case swMateTANGENT:
+		return ("tangent");
 	}
 	return ("other");
 }
@@ -3059,11 +3157,124 @@ const char *getAlignStr(long alignNum) {
 }
 
 
+void AssemblyInfo::doClosestAlign(const long index, coords &newAxis, const coords &direction) {
+	if (index == 0) {
+		newAxis = direction;
+		newAxis.normalize();
+	}
+	else if (index == 1 && direction == xaxis && newAxis.length() > 0) {
+		newAxis = newAxis * -1.0;
+		cout << "New axis is = " << newAxis << endl;
+		mateInfo.overallRot = rotAnglesZYX(xaxis, newAxis);
+		cout << "Overall rotation set to = " << mateInfo.overallRot << endl;
+	}
+	else cout << "Expecting std. xaxis to new axis, with 2 mate entities; index, base axis = " <<
+		index << " " << newAxis << endl;
+}
+
+
+void AssemblyInfo::doAligned(int &alignCnt, bool &adjustDisplace, coords &location, const long index,
+	const long mateRefType, const int mateCnt, const long mateType, const coords &direction) {
+	// Give precedence to 1st Datumplane or second aligned entry when there are 2 or fewer mates
+	if ((index == 0 && mateRefType == swSelDATUMPLANES) ||
+		(mateCnt < 3 && index == 1)) {
+		adjustDisplace = false;
+		mateInfo.displace = location;
+	}
+	else if (adjustDisplace) {
+		if ((alignCnt / 2) % 2 == 1) // Subtract every other ALIGNED mate pair
+			location = location * -1.0;
+		mateInfo.displace = mateInfo.displace + location;
+		++alignCnt;
+	}
+	// A faces angle mate indicates angle to rotate
+	if (index == 1 && mateType == swMateANGLE && mateRefType == swSelFACES && mateInfo.overallRot.length() == 0 && direction.length() > 0) {
+		mateInfo.overallRot = rotAnglesZYX(xaxis, direction);
+		cout << "Overall rotation set to = " << mateInfo.overallRot << endl;
+		// coords newpos = rotVecZYX(mateInfo.origpos, mateInfo.overallRot);
+	}
+}
+
+
+void AssemblyInfo::doAntiAligned(bool &adjustDisplace, coords &location, const long index,
+const long mateRefType, const int mateCnt, const coords &direction, const coords &direction1) {
+	if (index == 0) {
+		if (mateRefType == swSelDATUMPLANES) { // Anti-aligned datumplane seems to take precedence
+			mateInfo.displace = location;
+			coords newAxis = direction;
+			newAxis.normalize();
+			newAxis = newAxis * -1.0;
+			cout << "New axis is = " << newAxis << endl;
+			mateInfo.overallRot = rotAnglesZYX(xaxis, newAxis);
+			cout << "Overall rotation set to = " << mateInfo.overallRot << endl;
+			adjustDisplace = false;
+		}
+		else if (mateRefType != swSelEDGES)
+			location = location * -1.0;
+	}
+	else if (mateCnt < 3 && mateInfo.overallRot.length() == 0 && direction.length() > 0 && direction1.length() > 0 &&
+		!(direction == xaxis || direction == xaxisminus) && !(direction1 == xaxis || direction1 == xaxisminus)) {
+		// Note +-x axis pair is a special case handled below
+		// coords chkAxis = direction * -1.0;
+		// if (!(chkAxis == direction1)) { // Make sure directions are not trivial flip
+		// Axis flip can orient parts in reverse of correct direction
+		coords newAxis = direction;
+		newAxis.normalize();
+		mateInfo.overallRot = rotAnglesZYX(direction1, newAxis);
+		cout << "Overall rotation set to = " << mateInfo.overallRot << endl;
+		// }
+		// else cout << "Ignoring trivial axis flip " << direction << " into " << direction1 << endl;
+	}
+}
+
+void AssemblyInfo::getMateFaces(IMate2 *const matePtr) const
+{
+	VARIANT faceArray;
+	VariantInit(&faceArray);
+	hres = matePtr->GetSupplementalFaces(3L, &faceArray);
+	if (hres == S_OK) {
+		SAFEARRAY *facesview = V_ARRAY(&faceArray);
+		LPDISPATCH *srcptr = NULL;
+		long lStartBound = 0;
+		long lEndBound = 0;
+		SafeArrayGetLBound(facesview, 1, &lStartBound);
+		SafeArrayGetUBound(facesview, 1, &lEndBound);
+		hres = SafeArrayAccessData(facesview, (void**)&srcptr);
+		if (hres == S_OK && srcptr) {
+			IFace2 *faceptr = NULL;
+			for (int iIndex = lStartBound; iIndex <= lEndBound; iIndex++) {
+				hres = (srcptr[iIndex])->QueryInterface(__uuidof(IFace2), reinterpret_cast<void**>(&faceptr));
+				if (hres == S_OK && faceptr) {
+					long cnt = -1;
+					cout << "deref faceptr to call GetEdgeCnt index " << iIndex << endl;
+					hres = faceptr->GetEdgeCount(&cnt);
+					if (hres == S_OK) {
+						cout << "mate face edge cnt " << cnt << endl;
+					} cout << "Failed to get edge cnt" << endl;
+				} cout << "Failed to cast face ptr" << endl;
+			} // end for
+		}
+		else cout << "Failed to access Faces hres = " << std::hex << hres << " srcpr = " << srcptr << endl;
+	} else cout << "Failed to get Sup Faces, hres = " << std::hex << hres << endl;
+
+	/*
+	IFace2** faceptr = new IFace2*[10];
+	cout << "calling IGetSupFaces " << endl;
+	hres = matePtr->IGetSupplementalFaces(1, 2, faceptr);
+	if (hres == S_OK && faceptr != NULL && faceptr[0] != NULL) {
+		long cnt = -1;
+		cout << "deref faceptr to call GetEdgeCnt " << endl;
+		hres = faceptr[0]->GetEdgeCount(&cnt);
+		*/
+
+}
+
+
 void AssemblyInfo::showMate(IMate2 *matePtr, coords &antiAlignTot, int &alignCnt,
 	coordList &displaceList, int mateInd, bool &adjustDisplace, int mateCnt, bool &meRadiiSame)
 {
 	// cout << "Found Mate2\n";
-	bool overallRotUnset = (overallRot.length() == 0);
+	bool overallRotUnset = (mateInfo.overallRot.length() == 0);
 	long align = -1;
 	hres = matePtr->get_Alignment(&align);
 	cout << "Alignment = " << getAlignStr(align) << endl;
@@ -3089,7 +3300,7 @@ void AssemblyInfo::showMate(IMate2 *matePtr, coords &antiAlignTot, int &alignCnt
 						if (arraySize > 0) {
 							long mateRefType = -1;
 							hres = mateEntity->get_ReferenceType2(&mateRefType);
-							cout << "Mate Reference type " << mateRefType << endl;
+							cout << "Mate Reference type " << selectTypeStr(mateRefType) << endl;
 							VARIANT entityParams;
 							VariantInit(&entityParams);
 							hres = mateEntity->get_EntityParams(&entityParams);
@@ -3106,61 +3317,15 @@ void AssemblyInfo::showMate(IMate2 *matePtr, coords &antiAlignTot, int &alignCnt
 									int rank = displaceList[location];
 									// cout << "Location " << location << " current rank " << ++rank << endl;
 									displaceList[location] = ++rank;
-									// (displaceList[location])++;
 									if (align == swMateAlignCLOSEST) {
-										// displace = displace - location;
-										if (index == 0) {
-											newAxis = direction;
-											newAxis.normalize();
-										}
-										else if (index == 1 && direction == xaxis && newAxis.length() > 0) {
-											newAxis = newAxis * -1.0;
-											cout << "New axis is = " << newAxis << endl;
-											overallRot = rotAnglesZYX(xaxis, newAxis);
-											cout << "Overall rotation set to = " << overallRot << endl;
-										}
-										else cout << "Expecting std. xaxis to new axis, with 2 mate entities; index, base axis = " <<
-											index << " " << newAxis << endl;
+										doClosestAlign(index, newAxis, direction);
 									}
 									else if (align == swMateAlignALIGNED) {
-										// Give precedence to 1st Datumplane or second aligned entry when there are 2 or fewer mates
-										if ((index == 0 && mateRefType == swSelDATUMPLANES) ||
-												(mateCnt < 3 && index == 1)) {
-											adjustDisplace = false;
-											displace = location;
-										}
-										else if (adjustDisplace) {
-											if ((alignCnt / 2) % 2 == 1) // Subtract every other ALIGNED mate pair
-												location = location * -1.0;
-											displace = displace + location;
-											++alignCnt;
-										}
+										doAligned(alignCnt, adjustDisplace, location, index, mateRefType, mateCnt, mateType,
+											direction);
 									}
 									else if (align == swMateAlignANTI_ALIGNED) {
-										if (index == 0) {
-											if (mateRefType == swSelDATUMPLANES) { // Anti-aligned datumplane seems to take precedence
-												displace = location;
-												newAxis = direction;
-												newAxis.normalize();
-												newAxis = newAxis * -1.0;
-												cout << "New axis is = " << newAxis << endl;
-												overallRot = rotAnglesZYX(xaxis, newAxis);
-												cout << "Overall rotation set to = " << overallRot << endl;
-												adjustDisplace = false;
-											} else location = location * -1.0;
-										} else if (mateCnt < 3 && overallRot.length() == 0 && direction.length() > 0 && direction1.length() > 0 &&
-											!(direction == xaxis || direction == xaxisminus) && !(direction1 == xaxis || direction1 == xaxisminus)) {
-											// Note +-x axis pair is a special case handled below
-											// coords chkAxis = direction * -1.0;
-											// if (!(chkAxis == direction1)) { // Make sure directions are not trivial flip
-												// Axis flip can orient parts in reverse of correct direction
-												newAxis = direction;
-												newAxis.normalize();
-												overallRot = rotAnglesZYX(direction1, newAxis);
-												cout << "Overall rotation set to = " << overallRot << endl;
-											// }
-											// else cout << "Ignoring trivial axis flip " << direction << " into " << direction1 << endl;
-										}
+										doAntiAligned(adjustDisplace, location, index, mateRefType, mateCnt, direction, direction1);
 										antiAlignTot = antiAlignTot + location;
 										// cout << "aatot value " << antiAlignTot << endl;
 									}
@@ -3178,45 +3343,89 @@ void AssemblyInfo::showMate(IMate2 *matePtr, coords &antiAlignTot, int &alignCnt
 														double adjDisplace = meRadius * 4.0;
 														if (adjDisplace < 1.0)	// Radius value may need adjustment, but not too big
 															meRadius = adjDisplace;
-														displace.y += meRadius;
+														mateInfo.displace.y += meRadius;
 													}
 												}
 											} 											
-											else displace.z -= meRadius;
-											cout << "May be using MateEntity radius 1 = " << meRadius << ", displace is now " << displace << endl;
+											else mateInfo.displace.z -= meRadius;
+											cout << "May be using MateEntity radius 1 = " << meRadius << ", displace is now " << mateInfo.displace << endl;
 										}
-										if (overallRot.length() == 0 && (direction == xaxis || direction == xaxisminus)) {
+										if (mateInfo.overallRot.length() == 0 && (direction == xaxis || direction == xaxisminus)) {
 											if (direction1 == xaxisminus || (location1.length() > 0 && direction1 == xaxis)) {
 												// Pair of +-x axes (same or different) seems to indicate x should be rotated into -z
 												// but only if mate isn't empty (first seen in SolidWorks 2014)
 												coords begAxis = xaxis;
 												if (mateInd > 1 || meRadius > 0)	// 3rd mate or meRadius seems to indicate should rotate from y instead of x
 													begAxis = yaxis;
-												overallRot = rotAnglesZYX(begAxis, zaxis);
-												cout << "Overall rotation set to = " << overallRot << " because of +-x pair " << endl;
+												mateInfo.overallRot = rotAnglesZYX(begAxis, zaxis);
+												cout << "Overall rotation set to = " << mateInfo.overallRot << " because of +-x pair " << endl;
 											}
 										}
 										// else cout << "Direction1 " << direction1 << ", direction2 " << direction << " overall " << overallRot << endl;
 									}
-								}
-								/*
-								struct IDispatch *pMateRef = NULL;
-								hres = mateEntity->get_Reference(&pMateRef);
-								if (hres == S_OK && pMateRef) {
-									IEntity *mateRefPtr = NULL;
-									hres = pMateRef->QueryInterface(__uuidof(IEntity), reinterpret_cast<void**>(&mateRefPtr));
-									if (hres == S_OK && mateRefPtr) {
-										CComBSTR sRefName;
-										hres = mateRefPtr->get_ModelName(&sRefName);
-										if (hres == S_OK && sRefName) {
-											printbstr("Entity model name", sRefName);
+									struct IDispatch *pMateRef = NULL;
+									hres = mateEntity->get_Reference(&pMateRef);
+									if (hres == S_OK && pMateRef) {
+										IEntity *mateRefPtr = NULL;
+										hres = pMateRef->QueryInterface(__uuidof(IEntity), reinterpret_cast<void**>(&mateRefPtr));
+										if (hres == S_OK && mateRefPtr) {
+											CComBSTR sRefName;
+											long cnt;
+											hres = mateRefPtr->GetType(&cnt);
+											//hres = mateRefPtr->get_Name(&sRefName);
+											if (hres == S_OK) {
+												// printbstr("Entity model name", sRefName);
+												cout << "entity type = " << selectTypeStr(cnt) << endl;
+												if (cnt == swSelFACES) {
+													IFace2 *faceptr = NULL;
+													hres = mateRefPtr->QueryInterface(__uuidof(IFace2), reinterpret_cast<void**>(&faceptr));
+													if (hres == S_OK && faceptr) {
+														hres = faceptr->GetEdgeCount(&cnt);
+													if (hres == S_OK) {
+															cout << "mate face edge cnt " << cnt << endl;
+														}
+														else cout << "Failed to get edge cnt" << endl;
+
+													}
+													else cout << "Couldn't get face ptr hres = " << std::hex << hres << " " << faceptr << endl;
+												}
+												else if (cnt == swSelEDGES) {
+													IEdge *edgeptr = NULL;
+													hres = mateRefPtr->QueryInterface(__uuidof(IEdge), reinterpret_cast<void**>(&edgeptr));
+													if (hres == S_OK && edgeptr) {
+														CComPtr<ICurve> curveptr;
+														hres = edgeptr->IGetCurve(&curveptr);
+														if (hres == S_OK && curveptr) {
+															hres = curveptr->IsLine(&retVal);
+															bool goodLine = (hres == S_OK && retVal);
+															if (goodLine) {
+																sideInfo thisSide;
+																if (getLineInfo(curveptr, thisSide) && mateInfo.edgeSet == false) {
+																	if (location != thisSide.point || direction != thisSide.lineDir) {
+																		mateInfo.origpos = thisSide.point;
+																		cout << "Storing " << mateInfo.origpos << " for later displace setting\n";
+																		mateInfo.origdir = thisSide.lineDir;
+																		mateInfo.displpos = location;
+																		mateInfo.displdir = direction;
+																		mateInfo.edgeSet = true;
+																		adjustDisplace = false;
+																		mateInfo.displace = origin;	// We will calc displacement later when center is known
+																		mateInfo.startIndex = surfArrayInd;
+																	}
+																}
+															}
+														}
+														else cout << "Couldn't get curve" << endl;
+													}
+													else cout << "Couldn't get edge hres ptr " << std::hex << hres << " " << edgeptr << endl;
+												}
+											}
 										}
-										else cout << "Couldn't get model name hres ptr " << std::hex << hres << " " << sRefName << endl;
+										else cout << "Couldn't convert Mate Reference hres ptr " << std::hex << hres << " " << mateRefPtr << endl;
 									}
-									else cout << "Couldn't convert Mate Reference hres ptr " << std::hex << hres << " " << mateRefPtr << endl;
-								}
-								else cout << "Couldn't get Mate Reference hres ptr " << hres << " " << pMateRef << endl;
-								*/
+									else cout << "Couldn't get Mate Reference hres ptr " << hres << " " << pMateRef << endl;
+								} // end if good ME params
+
 								IComponent2* swComponentNxt = NULL;
 								hres = mateEntity->get_ReferenceComponent(&swComponentNxt);
 								if (hres == S_OK && swComponentNxt) {
@@ -3224,10 +3433,10 @@ void AssemblyInfo::showMate(IMate2 *matePtr, coords &antiAlignTot, int &alignCnt
 									hres = swComponentNxt->get_Name2(&sCmpName);
 									if (hres == S_OK && sCmpName) {
 										printbstr("comp name ", sCmpName);
-										if (overallRotUnset && overallRot.length() > 0 && align == swMateAlignANTI_ALIGNED && mateInd == 0) {
+										if (overallRotUnset && mateInfo.overallRot.length() > 0 && align == swMateAlignANTI_ALIGNED && mateInd == 0) {
 											// Make sure overallRot was just set by this mate
 											// Only restrict overall rotation if it comes from first anti-aligned mate
-											overallRotCmpNmStr = CW2A(sCmpName);
+											mateInfo.overallRotCmpNmStr = CW2A(sCmpName);
 										}
 									}
 								}
@@ -3242,6 +3451,7 @@ void AssemblyInfo::showMate(IMate2 *matePtr, coords &antiAlignTot, int &alignCnt
 		}
 	}
 	else cout << "Couldn't get MateEntity2 from mate hres ptr " << hres << " " << matePtr << endl;
+	// getMateFaces(matePtr);
 }
 
 /*
@@ -3276,9 +3486,7 @@ void AssemblyInfo::showMateEntity(CComPtr<IFeature> swFeature) {
 
 
 void AssemblyInfo::getMates(IComponent2 *swSelectedComponent) {
-	displace = origin; // Clear values from previous component
-	overallRot = origin;
-	overallRotCmpNmStr.clear();
+	mateInfo.clear(); // Clear values from previous component
 	VARIANT mateList;
 	VariantInit(&mateList);
 	long nMateCount = -1;
@@ -3312,7 +3520,7 @@ void AssemblyInfo::getMates(IComponent2 *swSelectedComponent) {
 						}
 					}
 					if (adjustDisplace) {
-						displace = displace + antiAlignTot;
+						mateInfo.displace = mateInfo.displace + antiAlignTot;
 						if (displaceList.size() > 0) {
 							// cout << "Displace list size = " << displaceList.size() << endl;
 							int rank = -1;
@@ -3325,12 +3533,12 @@ void AssemblyInfo::getMates(IComponent2 *swSelectedComponent) {
 								}
 							}
 							if (rank > 3 || (rank == 3 && nMateCount == 2)) {
-								displace = betterDisplace;
+								mateInfo.displace = betterDisplace;
 								// cout << "Displacement replaced by rank " << rank << endl;
 							}
 						}
 					}
-					cout << "Final displacment = " << displace << " aatot = " << antiAlignTot << endl;
+					cout << "Final displacment = " << mateInfo.displace << " aatot = " << antiAlignTot << endl;
 
 				}
 			}
@@ -3339,11 +3547,12 @@ void AssemblyInfo::getMates(IComponent2 *swSelectedComponent) {
 	}
 	else cout << "Couldn't get mate list from component hres = " << hres << endl;
 	if (after1stComp == false) {
-		if (nMateCount > 4)
-			displace = origin;
+		// if (nMateCount > 0) // Was 4. Now do not use any beginning mates
+			// mateInfo.displace = origin;
 		// Keep 1st displacement but don't trust large number of mates, but ignore 1st rotation
-		overallRot = origin;
-		overallRotCmpNmStr.clear();
+		// overallRot = origin;
+		// overallRotCmpNmStr.clear();
+		mateInfo.clear();
 		after1stComp = true;
 	}
 }
@@ -3642,15 +3851,15 @@ void AssemblyInfo::getRelatedComps(IComponent2 *baseComp) {
 		for (vector<GenericSurf *>::iterator it = surfArray.begin(); it != surfArray.end(); ++it) {
 			if ((*it)->pathNameStr.compare(seedPath) == 0) {
 				if ((*it)->featureTypeStr.compare(referenceType) == 0) {
-					if (overallRot.length() == 0 && (*it)->overallRot.length() != 0)	// Get overallRot from base seed component
-						overallRot = (*it)->overallRot;
+					if (mateInfo.overallRot.length() == 0 && (*it)->overallRot.length() != 0)	// Get overallRot from base seed component
+						mateInfo.overallRot = (*it)->overallRot;
 				} else if ((*it)->featureTypeStr.compare(patternType) == 0) {
 					if (compName.size() == 0 || (*it)->compNameStr.compare(compName) != 0) {
 						compName = (*it)->compNameStr;
 						++patternCnt;
 					}
 					if ((*it)->overallRot.length() == 0)
-						(*it)->overallRot = overallRot;		// Set from seed component
+						(*it)->overallRot = mateInfo.overallRot;		// Set from seed component
 					if ((*it)->displace.length() == 0 && patternCnt >= 0 && pattDisplaceList.size() > patternCnt)
 						(*it)->displace = pattDisplaceList[patternCnt];
 				}
@@ -3712,8 +3921,8 @@ void AssemblyInfo::getSeedComps(ILocalLinearPatternFeatureData *const linpattern
 void AssemblyInfo::getTransfDisplace(ILocalLinearPatternFeatureData *linpattern, double xspacing, double zspacing)
 {
 	pattDisplaceList.clear();
-	overallRot = origin;	// Clear previous value
-	overallRotCmpNmStr.clear();
+	mateInfo.overallRot = origin;	// Clear previous value
+	mateInfo.overallRotCmpNmStr.clear();
 	CComPtr<IMathTransform> transform;
 	hres = linpattern->GetTransform(1, &transform);
 	cout << "transform fetch hres = " << hres << " ptr = " << transform << endl;
