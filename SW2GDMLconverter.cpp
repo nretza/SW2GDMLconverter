@@ -258,7 +258,7 @@ typedef struct parts {
 	int surfInd;
 	string nameID, volumeName;
 	bool createVol;
-	string matNameStr;
+	string matNameStr, compName;
 	bool inBoolSolid;
 } partDesc;
 
@@ -1061,8 +1061,24 @@ const char *const nameIncr(surfTypeIDs itemcode)
 	int index = itemcode - 4001;
 	static string name;
 	name = surftypes[index];
-	char numstr[50];
+	char numstr[32];
 	sprintf_s(numstr, "%d", ++itemCnt[index]);
+	name += numstr;
+	return (name.c_str());
+}
+
+
+const char *const anyNameIncr(const string &basename)
+{
+	static unordered_map<string, int> nameList;
+	static string name;
+	name = basename;
+	if (name.length() == 0)
+		name = "null";
+	int &cnt = nameList[name];
+	++cnt;
+	char numstr[32];
+	sprintf_s(numstr, "_%d", cnt);
 	name += numstr;
 	return (name.c_str());
 }
@@ -2792,6 +2808,7 @@ void AssemblyInfo::outputShapeSetPart(shapeList *sList, const int ind1, const in
 	partDesc newPart;
 	newPart.surfInd = ind1;
 	newPart.matNameStr = surfArray[ind1]->matNameStr;
+	newPart.compName = surfArray[ind1]->compNameStr;
 	if (ind1 != ind2 && averagePos) {
 		coords avgpos = surfArray[ind1]->position + surfArray[ind2]->position;
 		avgpos = avgpos * 0.5;
@@ -3073,7 +3090,7 @@ void AssemblyInfo::outputParts()
 	gdmlout << beginEnd.openSepElem("structure") << endl;
 	for (vector<partDesc>::iterator it = partArray.begin(); it != partArray.end(); ++it) {
 		if (it->createVol) {
-			it->volumeName = nameIncr(VOLUME_ID);
+			it->volumeName = anyNameIncr(it->compName);
 			gdmlout << indent1 << beginEnd.openSepElem("volume", attrib1.attribute("name", it->volumeName.c_str())) << endl;
 			gdmlout << indent2 << beginEnd.openElem("materialref") << attrib1.attribute("ref", it->matNameStr.c_str());
 			gdmlout << beginEnd.closeElem() << endl;
