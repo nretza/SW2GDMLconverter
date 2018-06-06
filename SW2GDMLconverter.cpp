@@ -2861,6 +2861,7 @@ void AssemblyInfo::outputHole(const long baseInd, const long holeInd)
 	newPart.createVol = true;
 	newPart.nameID = name;
 	newPart.matNameStr = surfArray[baseInd]->matNameStr;
+	newPart.compName = surfArray[baseInd]->compNameStr;
 	partArray.push_back(newPart);
 	// Base and hole now together in "subtraction".
 	// Don't create volumes for them.
