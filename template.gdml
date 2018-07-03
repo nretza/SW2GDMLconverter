@@ -48,6 +48,9 @@
   </element>
   <element name="Silver" formula="Ag" Z="47."> <atom value="107.868"/>
   </element>
+  <element name="Tungsten_Element" formula="W" Z="74."> <atom value="183.84"/>
+  </element>
+
   <material name="Al" Z="13.0">
    <D value="2.70"/> <atom value="26.98"/>
   </material>
@@ -68,6 +71,13 @@
    <fraction n="0.1" ref="Nickel"/>
   </material>
   <material name="AISI_316_Stainless_Steel_Sheet_.SS.">
+   <D value="8.0" unit="g/cm3"/>
+   <fraction n="0.685" ref="Iron"/>
+   <fraction n="0.17" ref="Chromium"/>
+   <fraction n="0.12" ref="Nickel"/>
+   <fraction n="0.025" ref="Molybdenum"/>
+  </material>
+  <material name="AISI_316_Annealed_Stainless_Steel_Bar_.SS.">
    <D value="8.0" unit="g/cm3"/>
    <fraction n="0.685" ref="Iron"/>
    <fraction n="0.17" ref="Chromium"/>
@@ -99,6 +109,10 @@
   <material name="Pure_Silver" formula="Ag">
    <D value="10.49" unit="g/cm3"/>
    <composite n="1" ref="Silver"/>
+  </material>
+  <material name="Tungsten" formula="W">
+   <D value="19.3" unit="g/cm3"/>
+   <composite n="1" ref="Tungsten_Element"/>
   </material>
  </materials>
 
