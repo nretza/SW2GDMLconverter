@@ -902,6 +902,7 @@ public:
 	void calcMateDisplace(const coords &posNoDispl);
 	void checkMateRot(const coords &normal);
 	void outputPhysVols();
+	void getMateEdge(IEntity  *const mateRefPtr, const coords &location, const coords &direction, bool &adjustDisplace);
 
 	vector<GenericSurf *> surfArray;
 	int surfArrayInd;
@@ -2516,6 +2517,10 @@ void AssemblyInfo::showFaceDetails(LPDISPATCH *srcptr, int srcindex, double *rad
 					cout << "Setting index " << surfArrayInd << " to displace " << mateInfo.displace << endl;
 					if (mateInfo.overallRotCmpNmStr.size() == 0 || mateInfo.overallRotCmpNmStr.compare(compNameStr) == 0)
 						surfArray[surfArrayInd]->overallRot = mateInfo.overallRot;
+					else {
+						cout << "Skipping overallRot because of comp name mismatch" << endl;
+						cout << "Rotat comp name " << mateInfo.overallRotCmpNmStr << ", current comp name " << compNameStr << endl;
+					}
 					surfArray[surfArrayInd]->matNameStr = matNameStr;
 					surfArray[surfArrayInd]->compNameStr = compNameStr;
 					surfArray[surfArrayInd]->pathNameStr = pathNameStr; 
@@ -3305,18 +3310,23 @@ const long mateRefType, const int mateCnt, const coords &direction, const coords
 			cout << "Overall rotation set to = " << mateInfo.overallRot << endl;
 			adjustDisplace = false;
 		}
-		else if (mateRefType != swSelEDGES)
+		else if (mateRefType != swSelEDGES && mateRefType != swSelFACES)
 			location = location * -1.0;
 	}
-	else if (mateCnt < 3 && mateInfo.overallRot.length() == 0 && direction.length() > 0 && direction1.length() > 0 &&
-		!(direction == xaxis || direction == xaxisminus) && !(direction1 == xaxis || direction1 == xaxisminus)) {
+	else if (mateRefType == swSelDATUMPLANES || (mateCnt < 3 && mateInfo.overallRot.length() == 0 && direction.length() > 0 && direction1.length() > 0 &&
+		!(direction == xaxis || direction == xaxisminus) && !(direction1 == xaxis || direction1 == xaxisminus))) {
 		// Note +-x axis pair is a special case handled below
 		// coords chkAxis = direction * -1.0;
 		// if (!(chkAxis == direction1)) { // Make sure directions are not trivial flip
 		// Axis flip can orient parts in reverse of correct direction
-		coords newAxis = direction;
+		coords oldAxis = direction1, newAxis = direction;
+		if (mateRefType == swSelDATUMPLANES) { // DATUMPLANES axis is starting axis
+			oldAxis = direction;
+			newAxis = direction1;
+		}
+		oldAxis.normalize();
 		newAxis.normalize();
-		mateInfo.overallRot = rotAnglesZYX(direction1, newAxis);
+		mateInfo.overallRot = rotAnglesZYX(oldAxis, newAxis);
 		cout << "Overall rotation set to = " << mateInfo.overallRot << endl;
 		// }
 		// else cout << "Ignoring trivial axis flip " << direction << " into " << direction1 << endl;
@@ -3366,6 +3376,38 @@ void AssemblyInfo::getMateFaces(IMate2 *const matePtr) const
 }
 
 
+void AssemblyInfo::getMateEdge(IEntity  *const mateRefPtr, const coords &location, const coords &direction, bool &adjustDisplace)
+{
+	IEdge *edgeptr = NULL;
+	hres = mateRefPtr->QueryInterface(__uuidof(IEdge), reinterpret_cast<void**>(&edgeptr));
+	if (hres == S_OK && edgeptr) {
+		CComPtr<ICurve> curveptr;
+		hres = edgeptr->IGetCurve(&curveptr);
+		if (hres == S_OK && curveptr) {
+			hres = curveptr->IsLine(&retVal);
+			bool goodLine = (hres == S_OK && retVal);
+			if (goodLine) {
+				sideInfo thisSide;
+				if (getLineInfo(curveptr, thisSide) && mateInfo.edgeSet == false) {
+					if (location != thisSide.point || direction != thisSide.lineDir) {
+						mateInfo.origpos = thisSide.point;
+						cout << "Storing edge " << mateInfo.origpos << " for later displace setting\n";
+						mateInfo.origdir = thisSide.lineDir;
+						mateInfo.displpos = location;
+						mateInfo.edgeSet = true;
+						adjustDisplace = false;
+						mateInfo.displace = origin;	// We will calc displacement later when center is known
+						mateInfo.startIndex = surfArrayInd;
+					}
+				}
+			}
+		}
+		else cout << "Couldn't get curve" << endl;
+	}
+	else cout << "Couldn't get edge hres ptr " << std::hex << hres << " " << edgeptr << endl;
+}
+
+
 void AssemblyInfo::showMate(IMate2 *matePtr, coords &antiAlignTot, int &alignCnt,
 	coordList &displaceList, int mateInd, bool &adjustDisplace, int mateCnt, bool &meRadiiSame)
 {
@@ -3396,7 +3438,7 @@ void AssemblyInfo::showMate(IMate2 *matePtr, coords &antiAlignTot, int &alignCnt
 						if (arraySize > 0) {
 							long mateRefType = -1;
 							hres = mateEntity->get_ReferenceType2(&mateRefType);
-							cout << "Mate Reference type " << selectTypeStr(mateRefType) << endl;
+							cout << "Mate Entity Reference type " << selectTypeStr(mateRefType) << endl;
 							VARIANT entityParams;
 							VariantInit(&entityParams);
 							hres = mateEntity->get_EntityParams(&entityParams);
@@ -3470,9 +3512,11 @@ void AssemblyInfo::showMate(IMate2 *matePtr, coords &antiAlignTot, int &alignCnt
 										if (hres == S_OK && sCmpName) {
 											mateCmpName = CW2A(sCmpName);
 											printbstr("comp name ", sCmpName);
-											if (overallRotUnset && mateInfo.overallRot.length() > 0 && align == swMateAlignANTI_ALIGNED && mateInd == 0) {
+											if (overallRotUnset && mateInfo.overallRot.length() > 0 && align == swMateAlignANTI_ALIGNED &&
+													mateRefType != swSelDATUMPLANES && mateInd == 0) {
 												// Make sure overallRot was just set by this mate
-												// Only restrict overall rotation if it comes from first anti-aligned mate
+												// Only restrict overall rotation if it comes from first anti-aligned mate but not a
+												// datum planes mate that may have the owning assembly as its component
 												mateInfo.overallRotCmpNmStr = mateCmpName;
 											}
 										}
@@ -3485,17 +3529,16 @@ void AssemblyInfo::showMate(IMate2 *matePtr, coords &antiAlignTot, int &alignCnt
 										hres = pMateRef->QueryInterface(__uuidof(IEntity), reinterpret_cast<void**>(&mateRefPtr));
 										if (hres == S_OK && mateRefPtr) {
 											CComBSTR sRefName;
-											long cnt;
-											hres = mateRefPtr->GetType(&cnt);
+											long mateEntityRefType;
+											hres = mateRefPtr->GetType(&mateEntityRefType);
 											//hres = mateRefPtr->get_Name(&sRefName);
 											if (hres == S_OK) {
 												// printbstr("Entity model name", sRefName);
-												cout << "entity type = " << selectTypeStr(cnt) << endl;
-												if (cnt == swSelFACES) {
+												cout << "type of mate entity reference = " << selectTypeStr(mateEntityRefType) << endl;
+												if (mateEntityRefType == swSelFACES) {
 													IFace2 *faceptr = NULL;
 													hres = mateRefPtr->QueryInterface(__uuidof(IFace2), reinterpret_cast<void**>(&faceptr));
 													if (hres == S_OK && faceptr && mateCmpName.substr(0, compNameStr.length()) == compNameStr) {
-														// We get the face pointer just to check it is valid, not to use it
 														if (meRadius != 0 && meRadius2 == 0 && mateType == swMateCONCENTRIC) {
 															mateInfo.axis = direction;
 															// Cylindrical face indicated by ME radius -- save its axis to calc with later
@@ -3521,46 +3564,20 @@ void AssemblyInfo::showMate(IMate2 *matePtr, coords &antiAlignTot, int &alignCnt
 																mateInfo.startIndex = surfArrayInd;
 															}
 														}
-														else if (mateInfo.edgeSet == false && location.length() > 0 && mateType == swMateDISTANCE) {
+														else if (mateInfo.edgeSet == false && location.length() > 0 && 	mateType == swMateDISTANCE) {
 															cout << "Setting displace based upon matching faces for distance mate " << location << endl;
-															// mateInfo.displpos = location;
-															// mateInfo.displdir = direction;
-															adjustDisplace = false;
 															mateInfo.displace = location;
-															// mateInfo.startIndex = surfArrayInd;
+															adjustDisplace = false;
 															mateInfo.edgeSet = true;
+														}
+														if (mateType == swMateCOINCIDENT && align == swMateAlignALIGNED && 	mateRefType == swSelFACES) {
+															getMateEdge(mateRefPtr, location, direction, adjustDisplace);
 														}
 													}
 													else cout << "Face names do not match" << endl;
 												}
-												else if (cnt == swSelEDGES) {
-													IEdge *edgeptr = NULL;
-													hres = mateRefPtr->QueryInterface(__uuidof(IEdge), reinterpret_cast<void**>(&edgeptr));
-													if (hres == S_OK && edgeptr) {
-														CComPtr<ICurve> curveptr;
-														hres = edgeptr->IGetCurve(&curveptr);
-														if (hres == S_OK && curveptr) {
-															hres = curveptr->IsLine(&retVal);
-															bool goodLine = (hres == S_OK && retVal);
-															if (goodLine) {
-																sideInfo thisSide;
-																if (getLineInfo(curveptr, thisSide) && mateInfo.edgeSet == false) {
-																	if (location != thisSide.point || direction != thisSide.lineDir) {
-																		mateInfo.origpos = thisSide.point;
-																		cout << "Storing " << mateInfo.origpos << " for later displace setting\n";
-																		mateInfo.origdir = thisSide.lineDir;
-																		mateInfo.displpos = location;
-																		mateInfo.edgeSet = true;
-																		adjustDisplace = false;
-																		mateInfo.displace = origin;	// We will calc displacement later when center is known
-																		mateInfo.startIndex = surfArrayInd;
-																	}
-																}
-															}
-														}
-														else cout << "Couldn't get curve" << endl;
-													}
-													else cout << "Couldn't get edge hres ptr " << std::hex << hres << " " << edgeptr << endl;
+												else if (mateEntityRefType == swSelEDGES) {
+													getMateEdge(mateRefPtr, location, direction, adjustDisplace);
 												}
 											}
 										}
