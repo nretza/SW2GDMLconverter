@@ -28,6 +28,7 @@
 #include <fstream>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 using namespace std;
@@ -46,6 +47,10 @@ const char *const selectTypes[] = { "swSelNOTHING", "swSelEDGES", "swSelFACES", 
 		"swSelDATUMPOINTS", "swSelOLEITEMS", "swSelATTRIBUTES", "swSelSKETCHES", "swSelSKETCHSEGS", "swSelSKETCHPOINTS" };
 
 static const int MAX_NUM_SEL_TYPES = 12;
+
+static const float WORLD_BOX_SIZE = 100.0;
+static const float PART_BOX_SIZE = 99.0;
+
 
 static const char *const selectTypeStr(long selTypeID) {
 	if (selTypeID < 0 || selTypeID >= MAX_NUM_SEL_TYPES)
@@ -859,6 +864,7 @@ public:
 
 	void calcmeasure(CComPtr<IMeasure> &mymeasure, VARIANT &oneface, double radius, long surfID, double &sideLen);
 	void outputParts();
+	void outputPartBoxes();
 	void outputSolids(shapeList *sList, bool looseMatch = false, bool singleSolids = false);
 	void centerPosition();
 	void getEdgeDist(IFace2 *const faceptr, CComPtr<IMeasure> &mymeasure, long surfID, double radius);
@@ -895,6 +901,7 @@ public:
 	void getMateFaces(IMate2 *const matePtr) const;
 	void calcMateDisplace(const coords &posNoDispl);
 	void checkMateRot(const coords &normal);
+	void outputPhysVols();
 
 	vector<GenericSurf *> surfArray;
 	int surfArrayInd;
@@ -913,6 +920,8 @@ protected:
 	vector<partDesc> partArray;
 	centerSurfIndArray edgeList;
 	vector<pair<int, int>> holeList;
+	unordered_set<string> compList;
+
 	class mateInfoStruc {
 	public:
 		void clear() {
@@ -1329,12 +1338,6 @@ int _tmain(int argc, _TCHAR* argv[])
 	gdmlout << beginEnd.closeElem() << endl;
 	gdmlout << beginEnd.closeSepElem("setup") << endl;
 	gdmlout << beginEnd.closeSepElem("gdml") << endl;
-	// gdmlout << "<setup name=\"Test1\" version=\"1.0\">\n";	gdmlout << "</setup>\n";
-	// gdmlout << "</gdml>\n";
-//	gdmlout << "<setup name=\"Test1\" version=\"1.0\">\n";
-//	gdmlout << " <world ref=\"World\"/>\n";
-//	gdmlout << "</setup>\n";
-//	gdmlout << "</gdml>\n";
 	gdmlout.close();
 	return 0;
 }
@@ -3048,6 +3051,54 @@ void AssemblyInfo::getInitRot(const int index) {
 	*/
 }
 
+void AssemblyInfo::outputPhysVols()
+{
+	xmlElem beginEnd, attrib1, attrib2, attrib3;
+	for (unordered_set<string>::iterator component = compList.begin(); component != compList.end(); ++component) {
+		string compName = component->substr(0, component->length() - 4); // Trim "_Box" from name
+		gdmlout << indent1 << beginEnd.openSepElem("volume", attrib1.attribute("name", compName.c_str())) << endl;
+		gdmlout << indent2 << beginEnd.openElem("materialref") << attrib1.attribute("ref", "Air");
+		gdmlout << beginEnd.closeElem() << endl;
+		gdmlout << indent2 << beginEnd.openElem("solidref") << attrib1.attribute("ref", component->c_str());
+		gdmlout << beginEnd.closeElem() << endl;
+
+		for (vector<partDesc>::iterator it = partArray.begin(); it != partArray.end(); ++it) {
+			if (compName == it->compName && it->createVol) {
+				gdmlout << indent2 << beginEnd.openSepElem("physvol") << endl;
+				gdmlout << indent3 << beginEnd.openElem("volumeref") << attrib1.attribute("ref", it->volumeName.c_str());
+				gdmlout << beginEnd.closeElem() << endl;
+				string pos("center");
+				// coords relPos = surfArray[it->surfInd]->position - surfArray[partArray.begin()->surfInd]->position;
+				coords relPos = surfArray[it->surfInd]->position;
+				if (surfArray[it->surfInd]->overallRot.length() > 0) { // Apply overall rotation for this component
+					double posLen = relPos.length();
+					cout << "index " << it->surfInd << " RelPos rotates from " << relPos;
+					coords revRot = surfArray[it->surfInd]->overallRot;
+					relPos = rotVecZYX(relPos, revRot);
+					if (posLen != relPos.length()) {
+						cout << "relPos len changed from " << posLen << " to " << relPos.length() << endl;
+						relPos.normalize();
+						relPos = relPos * posLen;
+					}
+					cout << " to " << relPos << endl;
+				}
+				// relPos = surfArray[it->surfInd]->position + surfArray[it->surfInd]->displace;
+				if (surfArray[it->surfInd]->displace.length() > 0)
+					cout << "Apply displacement displace: " << surfArray[it->surfInd]->displace << ", pos " << relPos << endl;
+				relPos = relPos + surfArray[it->surfInd]->displace;
+				gdmlout << indent3 << beginEnd.openElem("position") << attrib1.attribute("name", nameIncr(POSITION_ID));
+				gdmlout << attrib1.attribute("x", relPos.x) << attrib2.attribute("y", relPos.y) << attrib3.attribute("z", relPos.z);
+				gdmlout << beginEnd.closeElem() << endl;
+				gdmlout << indent3 << beginEnd.openElem("rotation") << attrib1.attribute("name", nameIncr(ROTATION_ID));
+				gdmlout << attrib1.attribute("z", surfArray[it->surfInd]->rotation.z) << attrib2.attribute("y", surfArray[it->surfInd]->rotation.y);
+				gdmlout << attrib3.attribute("x", surfArray[it->surfInd]->rotation.x);
+				gdmlout << beginEnd.closeElem() << endl;
+				gdmlout << indent2 << beginEnd.closeSepElem("physvol") << endl;
+			}
+		}
+		gdmlout << indent1 << beginEnd.closeSepElem("volume") << endl;
+	}
+}
 
 void AssemblyInfo::outputParts()
 {
@@ -3086,6 +3137,7 @@ void AssemblyInfo::outputParts()
 		outputHole(holeInd->first, holeInd->second);
 	}
 	outputSolids(&cylList, false, true); // Find bulk cylinders with only single face
+	outputPartBoxes();
 	xmlElem beginEnd, attrib1, attrib2, attrib3;
 	gdmlout << beginEnd.closeSepElem("solids") << endl << endl;
 	gdmlout << beginEnd.openSepElem("structure") << endl;
@@ -3100,48 +3152,36 @@ void AssemblyInfo::outputParts()
 			gdmlout << indent1 << beginEnd.closeSepElem("volume") << endl;
 		}
 	}
+	outputPhysVols();
 	gdmlout << indent1 << beginEnd.openSepElem("volume", attrib1.attribute("name", "World")) << endl;
 	gdmlout << indent2 << beginEnd.openElem("materialref") << attrib1.attribute("ref", "Air");
 	gdmlout << beginEnd.closeElem() << endl;
 	gdmlout << indent2 << beginEnd.openElem("solidref") << attrib1.attribute("ref", "WorldBox");
 	gdmlout << beginEnd.closeElem() << endl;
-	for (vector<partDesc>::iterator it = partArray.begin(); it != partArray.end(); ++it) {
-		if (it->createVol) {
-			gdmlout << indent2 << beginEnd.openSepElem("physvol") << endl;
-			gdmlout << indent3 << beginEnd.openElem("volumeref") << attrib1.attribute("ref", it->volumeName.c_str());
-			gdmlout << beginEnd.closeElem() << endl;
-			string pos("center");
-			// coords relPos = surfArray[it->surfInd]->position - surfArray[partArray.begin()->surfInd]->position;
-			coords relPos = surfArray[it->surfInd]->position;
-			if (surfArray[it->surfInd]->overallRot.length() > 0) { // Apply overall rotation for this component
-				double posLen = relPos.length();
-				cout << "index " << it->surfInd << " RelPos rotates from " << relPos;
-				coords revRot = surfArray[it->surfInd]->overallRot;
-				relPos = rotVecZYX(relPos, revRot);
-				if (posLen != relPos.length()) {
-					cout << "relPos len changed from " << posLen << " to " << relPos.length() << endl;
-					relPos.normalize();
-					relPos = relPos * posLen;
-				}
-				cout << " to " << relPos << endl;
-			}
-			// relPos = surfArray[it->surfInd]->position + surfArray[it->surfInd]->displace;
-			if (surfArray[it->surfInd]->displace.length() > 0)
-				cout << "Apply displacement displace: " << surfArray[it->surfInd]->displace << ", pos " << relPos << endl;
-			relPos = relPos + surfArray[it->surfInd]->displace;
-			gdmlout << indent3 << beginEnd.openElem("position") << attrib1.attribute("name", nameIncr(POSITION_ID));
-			gdmlout << attrib1.attribute("x", relPos.x) << attrib2.attribute("y", relPos.y) << attrib3.attribute("z", relPos.z);
-			gdmlout << beginEnd.closeElem() << endl;
-			gdmlout << indent3 << beginEnd.openElem("rotation") << attrib1.attribute("name", nameIncr(ROTATION_ID));
-			gdmlout << attrib1.attribute("z", surfArray[it->surfInd]->rotation.z) << attrib2.attribute("y", surfArray[it->surfInd]->rotation.y);
-			gdmlout << attrib3.attribute("x", surfArray[it->surfInd]->rotation.x);
-			gdmlout << beginEnd.closeElem() << endl;
-			gdmlout << indent2 << beginEnd.closeSepElem("physvol") << endl;
-		}
+	for (unordered_set<string>::iterator it = compList.begin(); it != compList.end(); ++it) {
+		string compName = it->substr(0, it->length() - 4); // Trim "_Box" from name
+		gdmlout << indent2 << beginEnd.openSepElem("physvol") << endl;
+		gdmlout << indent3 << beginEnd.openElem("volumeref") << attrib1.attribute("ref", compName.c_str());
+		gdmlout << beginEnd.closeElem() << endl;
+		gdmlout << indent2 << beginEnd.closeSepElem("physvol") << endl;
 	}
 	gdmlout << indent1 << beginEnd.closeSepElem("volume") << endl;
 	gdmlout << beginEnd.closeSepElem("structure") << endl << endl;
 }
+
+void AssemblyInfo::outputPartBoxes() {
+	for (vector<partDesc>::iterator it = partArray.begin(); it != partArray.end(); ++it) {
+		string boxName = it->compName + "_Box";
+		pair<unordered_set<string>::iterator, bool> result = compList.insert(boxName);
+		if (result.second) { // New component name was found
+			xmlElem beginEnd, attrib1, attrib2, attrib3;
+			gdmlout << indent1 << beginEnd.openLenElem("box") << attrib1.attribute("name", boxName.c_str());
+			gdmlout << attrib1.attribute("x", PART_BOX_SIZE) << attrib2.attribute("y", PART_BOX_SIZE) << attrib3.attribute("z", PART_BOX_SIZE);
+			gdmlout << beginEnd.closeElem() << endl;
+		}
+	}
+}
+
 
 static void testrot()
 {
@@ -4315,7 +4355,7 @@ void TraverseFeatureManagerDesignTree(IModelDoc2* swModel, ISldWorks* swApp)
 	xmlElem beginEnd, attrib1, attrib2, attrib3;
 	gdmlout << beginEnd.openSepElem("solids") << endl;
 	gdmlout << indent1 << beginEnd.openLenElem("box") << attrib1.attribute("name", "WorldBox");
-	gdmlout << attrib1.attribute("x", "100.0") << attrib2.attribute("y", "100.0") << attrib3.attribute("z", "100.0");
+	gdmlout << attrib1.attribute("x", WORLD_BOX_SIZE) << attrib2.attribute("y", WORLD_BOX_SIZE) << attrib3.attribute("z", WORLD_BOX_SIZE);
 	gdmlout << beginEnd.closeElem() << endl;
 	AssemblyInfo assembly;
 	do	{
