@@ -2909,7 +2909,8 @@ void AssemblyInfo::outputSolids(shapeList *sList, bool looseMatch, bool singleSo
 				} // end for steps
 			}
 			if (surfArray[*it]->wasOutput == false &&
-				(singleSolids || surfArray[*it]->surfID == PLANE_ID || surfArray[*it]->surfID == BSURF_ID || surfArray[*it]->surfID == TORUS_ID)) {
+				(singleSolids || surfArray[*it]->surfID == PLANE_ID || surfArray[*it]->surfID == BSURF_ID ||
+					surfArray[*it]->surfID == TORUS_ID || surfArray[*it]->surfID == CONE_ID)) {
 				cout << "Outputting single face " << *it << endl;
 				outputShapeSetPart(sList, *it, *it);
 			}
