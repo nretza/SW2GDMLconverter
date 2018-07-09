@@ -248,6 +248,10 @@ public:
 		return (product);
 	}
 
+	void clear() {
+		matrix2d.clear();
+	}
+
 	vector<coords> matrix2d;
 };
 
@@ -903,6 +907,7 @@ public:
 	void checkMateRot(const coords &normal);
 	void outputPhysVols();
 	void getMateEdge(IEntity  *const mateRefPtr, const coords &location, const coords &direction, bool &adjustDisplace);
+	void getTransf(IComponent2 *swSelectedComponent);
 
 	vector<GenericSurf *> surfArray;
 	int surfArrayInd;
@@ -948,7 +953,6 @@ protected:
 		bool edgeSet, faceRot, pendingDisplace;
 		int startIndex;
 		const IFace2 *faceptr;
-
 	} mateInfo;
 
 };
@@ -3571,7 +3575,11 @@ void AssemblyInfo::showMate(IMate2 *matePtr, coords &antiAlignTot, int &alignCnt
 															mateInfo.edgeSet = true;
 														}
 														if (mateType == swMateCOINCIDENT && align == swMateAlignALIGNED && 	mateRefType == swSelFACES) {
-															getMateEdge(mateRefPtr, location, direction, adjustDisplace);
+															mateInfo.displdir = direction;
+															mateInfo.displpos = location;
+															double area = 0;
+															hres = faceptr->GetArea(&area);
+															cout << "Face area = " << area << " hres = " << hres << endl;
 														}
 													}
 													else cout << "Face names do not match" << endl;
@@ -3630,8 +3638,81 @@ void AssemblyInfo::showMateEntity(CComPtr<IFeature> swFeature) {
 */
 
 
+static coords getVarCoords(CComPtr<IMathVector> transfCoords, const char *const msg) {
+	coords retCoord;
+	VARIANT theCoord;
+	VariantInit(&theCoord);
+	hres = transfCoords->get_ArrayData(&theCoord);
+	if (hres == S_OK) {
+		SAFEARRAY *coordView = V_ARRAY(&theCoord);
+		double *coordptr = NULL;
+		long lStartBound = 0;
+		long lEndBound = 0;
+		SafeArrayGetLBound(coordView, 1, &lStartBound);
+		SafeArrayGetUBound(coordView, 1, &lEndBound);
+		hres = SafeArrayAccessData(coordView, (void**)&coordptr);
+		if (hres == S_OK && coordptr) {
+			for (int ind = lStartBound; ind <= lEndBound - 2; ind += 3) {
+				coords coordval(coordptr[ind], coordptr[ind + 1], coordptr[ind + 2]);
+				cout << "Got " << msg << " = " << coordval << endl;
+				retCoord = coordval;
+			}
+		}
+		else cout << "Couldn't access variant array, hres = " << hres << endl;
+		SafeArrayUnaccessData(coordView);
+		SafeArrayDestroy(coordView);
+	}
+	else cout << "Couldn't get coord hres " << hres << endl;
+	return (retCoord);
+}
+
+
+void AssemblyInfo::getTransf(IComponent2 *swSelectedComponent) {
+	CComPtr<IMathTransform> transform;
+	hres = swSelectedComponent->get_Transform2(&transform);
+	cout << "transform fetch hres = " << hres << " ptr = " << transform << endl;
+	if (hres == S_OK && transform) {
+		CComPtr<IMathVector> xtrans, ytrans, ztrans, translat;
+		double scale = -1.0;
+		hres = transform->IGetData2(&xtrans, &ytrans, &ztrans, &translat, &scale);
+		if (hres == S_OK) {
+			cout << "Got transf data \n";
+			coords row;
+			matrix3x3 pattRot;
+			if (xtrans) {
+				row = getVarCoords(xtrans, "x coord");
+				pattRot.setRow(row);
+			}
+			if (ytrans) {
+				row = getVarCoords(ytrans, "y coord");
+				pattRot.setRow(row);
+			}
+			if (ztrans) {
+				row = getVarCoords(ztrans, "z coord");
+				pattRot.setRow(row);
+			}
+			if (xtrans && ytrans && ztrans) {
+				coords rotatedVec = pattRot * zaxis;
+				cout << "zaxis = " << zaxis << ", rotVec = " << rotatedVec << endl;
+				coords rotAngle = rotAnglesZYX(zaxis, rotatedVec);
+				if (rotAngle.length() > 0) {
+					mateInfo.overallRot = rotAngle;
+					cout << "Setting overallRot based upon transf matrix " << mateInfo.overallRot << endl;
+				}
+			}
+			if (translat) {
+				mateInfo.displace = getVarCoords(translat, "translat");
+				cout << "Setting displacement from transform " << mateInfo.displace << endl;
+			}
+			cout << "Scale = " << scale << endl;
+		}
+	}
+}
+
 void AssemblyInfo::getMates(IComponent2 *swSelectedComponent) {
 	mateInfo.clear(); // Clear values from previous component
+	getTransf(swSelectedComponent);
+	return;
 	VARIANT mateList;
 	VariantInit(&mateList);
 	long nMateCount = -1;
@@ -3692,11 +3773,6 @@ void AssemblyInfo::getMates(IComponent2 *swSelectedComponent) {
 	}
 	else cout << "Couldn't get mate list from component hres = " << hres << endl;
 	if (after1stComp == false) {
-		// if (nMateCount > 0) // Was 4. Now do not use any beginning mates
-			// mateInfo.displace = origin;
-		// Keep 1st displacement but don't trust large number of mates, but ignore 1st rotation
-		// overallRot = origin;
-		// overallRotCmpNmStr.clear();
 		mateInfo.clear();
 		after1stComp = true;
 	}
@@ -3947,34 +4023,6 @@ static void procComponents(IComponent2* swSelectedComponent, CComPtr<ISelectData
 }
 
 
-static coords getVarCoords(CComPtr<IMathVector> transfCoords, const char *const msg) {
-	coords retCoord;
-	VARIANT theCoord;
-	VariantInit(&theCoord);
-	hres = transfCoords->get_ArrayData(&theCoord);
-	if (hres == S_OK) {
-		SAFEARRAY *coordView = V_ARRAY(&theCoord);
-		double *coordptr = NULL;
-		long lStartBound = 0;
-		long lEndBound = 0;
-		SafeArrayGetLBound(coordView, 1, &lStartBound);
-		SafeArrayGetUBound(coordView, 1, &lEndBound);
-		hres = SafeArrayAccessData(coordView, (void**)&coordptr);
-		if (hres == S_OK && coordptr) {
-			for (int ind = lStartBound; ind <= lEndBound - 2; ind += 3) {
-				coords coordval(coordptr[ind], coordptr[ind + 1], coordptr[ind + 2]);
-				cout << "Got " << msg << " = " << coordval << endl;
-				retCoord = coordval;
-			}
-		}
-		else cout << "Couldn't access variant array, hres = " << hres << endl;
-		SafeArrayUnaccessData(coordView);
-		SafeArrayDestroy(coordView);
-	}
-	else cout << "Couldn't get coord hres " << hres << endl;
-	return (retCoord);
-}
-
 
 // Gets related components to Local Linear Pattern seed component and
 // sets their displacement to match the pattern displacement
@@ -4095,8 +4143,6 @@ void AssemblyInfo::getTransfDisplace(ILocalLinearPatternFeatureData *linpattern,
 				coords xdir = pattRot * xaxis;
 				xdir = xdir * -1.0;		// Direction seems to be reversed
 				xdir.normalize();
-				// overallRot = rotAnglesZYX(xaxis, xdir);
-				// cout << "x to " << xdir << " is angle for overallRot" << overallRot << endl;
 				coords zdir = pattRot * zaxis;
 				zdir.normalize();
 				coords pattDisplace = getVarCoords(translat, "translat");
@@ -4113,8 +4159,8 @@ void AssemblyInfo::getTransfDisplace(ILocalLinearPatternFeatureData *linpattern,
 			cout << "Scale = " << scale << endl;
 		}
 	}
-
 }
+
 
 // ********* Finish this method. It should already find the Spacing
 // What else is needed? What does spacing mean for circular pattern?
