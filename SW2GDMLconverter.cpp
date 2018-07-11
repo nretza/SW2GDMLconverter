@@ -189,6 +189,12 @@ public:
 };
 
 
+static const coords zaxis(0.0, 0.0, 1.0),
+yaxis(0.0, 1.0, 0.0), xaxis(1.0, 0.0, 0.0),
+xaxisminus(-1.0, 0.0, 0.0), zaxisminus(0.0, 0.0, -1.0),
+origin(0, 0, 0);
+
+
 ostream & operator<<(ostream &os, const coords &coordval) {
 	os << "(" << coordval.x << ", " << coordval.y << ", " << coordval.z << ") ";
 	return (os);
@@ -233,27 +239,69 @@ coords crossProd(const coords &fac1, const coords &fac2) {
 
 class matrix3x3 {
 public:
-	matrix3x3() {}
+	matrix3x3() : goodValues(false)
+	{}
 
-	void setRow(const coords &rowVal) {
-		if (matrix2d.size() < 3)
-			matrix2d.push_back(rowVal);
+	void setCol(const coords &colVal, unsigned index) {
+		if (index < 3) {
+			goodValues = true;
+			matrix2d[0][index] = colVal.x;
+			matrix2d[1][index] = colVal.y;
+			matrix2d[2][index] = colVal.z;
+		}
+		else cout << "Index too large " << index << endl;
 	}
 
 	coords operator*(const coords &val) {
 		coords product;
-		product.x = dotProd(matrix2d[0], val);
-		product.y = dotProd(matrix2d[1], val);
-		product.z = dotProd(matrix2d[2], val);
+		if (goodValues) {
+			coords row(matrix2d[0][0], matrix2d[0][1], matrix2d[0][2]);
+			product.x = dotProd(row, val);
+			row.x = matrix2d[1][0];
+			row.y = matrix2d[1][1];
+			row.z = matrix2d[1][2];
+			product.y = dotProd(row, val);
+			row.x = matrix2d[2][0];
+			row.y = matrix2d[2][1];
+			row.z = matrix2d[2][2];
+			product.z = dotProd(row, val);
+		}
 		return (product);
 	}
 
-	void clear() {
-		matrix2d.clear();
+	int empty() {
+		return (goodValues == false);
 	}
 
-	vector<coords> matrix2d;
+	void clear() {
+		goodValues = false;
+	}
+
+	bool isIdentity() {
+		if (goodValues == false)
+			return (false);
+		bool isID = true;
+		for (unsigned col = 0; isID && (col < 3); ++col) {
+			for (unsigned row = 0; isID && (row < 3); ++row) {
+				if (row == col )
+					isID = (isID && matrix2d[row][col] == 1.0);
+				else isID = (isID && matrix2d[row][col] == 0.0);
+			}
+		}
+		return (isID);
+	}
+
+	double matrix2d[3][3];
+	bool goodValues;
 };
+
+
+ostream & operator<<(ostream &os, const matrix3x3 &mat) {
+	os << mat.matrix2d[0] << endl;
+	os << mat.matrix2d[1] << endl;
+	os << mat.matrix2d[2] << endl;
+	return (os);
+}
 
 
 typedef struct boxSide {
@@ -369,6 +417,7 @@ public:
 	// axisList area axis values used to help find the axis
 	coords displace;
 	coords overallRot;
+	matrix3x3 overallRotMatrix;
 	IFace2 *facePtr;
 
 protected:
@@ -854,11 +903,6 @@ public:
 	virtual double getSpacing(T *patternType, AssemblyInfo &assembly) override;
 };
 
-static const coords zaxis(0.0, 0.0, 1.0),
-yaxis(0.0, 1.0, 0.0), xaxis(1.0, 0.0, 0.0),
-xaxisminus(-1.0, 0.0, 0.0), zaxisminus(0.0, 0.0, -1.0),
-origin(0, 0, 0);
-
 
 class AssemblyInfo {
 public:
@@ -933,6 +977,7 @@ protected:
 		void clear() {
 			displace = origin; // Clear values from previous component
 			overallRot = origin;
+			rotMatrix.clear();
 			overallRotCmpNmStr.clear();
 			origpos = origin;
 			origdir = origin;
@@ -948,6 +993,7 @@ protected:
 		coords displace;
 		coords overallRot;
 		string overallRotCmpNmStr;
+		matrix3x3 rotMatrix;
 		coords origpos, origdir;
 		coords displpos, displdir, axis;
 		bool edgeSet, faceRot, pendingDisplace;
@@ -2519,8 +2565,10 @@ void AssemblyInfo::showFaceDetails(LPDISPATCH *srcptr, int srcindex, double *rad
 					*radius = surfArray[surfArrayInd]->showSurfParams(this);
 					surfArray[surfArrayInd]->displace = mateInfo.displace;
 					cout << "Setting index " << surfArrayInd << " to displace " << mateInfo.displace << endl;
-					if (mateInfo.overallRotCmpNmStr.size() == 0 || mateInfo.overallRotCmpNmStr.compare(compNameStr) == 0)
+					if (mateInfo.overallRotCmpNmStr.size() == 0 || mateInfo.overallRotCmpNmStr.compare(compNameStr) == 0){
 						surfArray[surfArrayInd]->overallRot = mateInfo.overallRot;
+						surfArray[surfArrayInd]->overallRotMatrix = mateInfo.rotMatrix;
+					}
 					else {
 						cout << "Skipping overallRot because of comp name mismatch" << endl;
 						cout << "Rotat comp name " << mateInfo.overallRotCmpNmStr << ", current comp name " << compNameStr << endl;
@@ -3080,17 +3128,20 @@ void AssemblyInfo::outputPhysVols()
 				string pos("center");
 				// coords relPos = surfArray[it->surfInd]->position - surfArray[partArray.begin()->surfInd]->position;
 				coords relPos = surfArray[it->surfInd]->position;
-				if (surfArray[it->surfInd]->overallRot.length() > 0) { // Apply overall rotation for this component
+				if (surfArray[it->surfInd]->overallRotMatrix.empty() == false) { // Apply overall rotation for this component
 					double posLen = relPos.length();
 					cout << "index " << it->surfInd << " RelPos rotates from " << relPos;
-					coords revRot = surfArray[it->surfInd]->overallRot;
-					relPos = rotVecZYX(relPos, revRot);
+					matrix3x3 rotMatrix = surfArray[it->surfInd]->overallRotMatrix;
+					relPos = rotMatrix * relPos;
+					// relPos = rotVecZYX(relPos, revRot);
 					if (posLen != relPos.length()) {
 						cout << "relPos len changed from " << posLen << " to " << relPos.length() << endl;
 						relPos.normalize();
 						relPos = relPos * posLen;
 					}
 					cout << " to " << relPos << endl;
+					cout << "by matrix\n";
+					cout << rotMatrix;
 				}
 				// relPos = surfArray[it->surfInd]->position + surfArray[it->surfInd]->displace;
 				if (surfArray[it->surfInd]->displace.length() > 0)
@@ -3114,11 +3165,18 @@ void AssemblyInfo::outputParts()
 {
 	for (int index = 0; index <= surfArrayInd; ++index)
 	{
-		if (surfArray[index]->overallRot.length() > 0) { // Apply overall rotation for this component
-			surfArray[index]->axis = rotVecZYX(surfArray[index]->axis, surfArray[index]->overallRot);
+		if (surfArray[index]->overallRotMatrix.empty() == false) { // Apply overall rotation for this component
+			cout << "Rotating axis from " << surfArray[index]->axis << " to ";
+			surfArray[index]->axis = surfArray[index]->overallRotMatrix * surfArray[index]->axis;
+			cout << surfArray[index]->axis << endl;
 			if (surfArray[index]->startAxis.length() > 0)
-				surfArray[index]->startAxis = rotVecZYX(surfArray[index]->startAxis, surfArray[index]->overallRot);
+				surfArray[index]->startAxis = surfArray[index]->overallRotMatrix * surfArray[index]->startAxis;
 		}
+		// if (surfArray[index]->overallRot.length() > 0) { // Apply overall rotation for this component
+			// surfArray[index]->axis = rotVecZYX(surfArray[index]->axis, surfArray[index]->overallRot);
+			// if (surfArray[index]->startAxis.length() > 0)
+				// surfArray[index]->startAxis = rotVecZYX(surfArray[index]->startAxis, surfArray[index]->overallRot);
+		// }
 		surfArray[index]->rotation = rotAnglesZYX(zaxis, surfArray[index]->axis);
 		// Partial disks and cylinders and boards need initial rotation
 		if (surfArray[index]->startAxis.length() > 0 && (surfArray[index]->getAngle() != (2.0 * M_PI) ||
@@ -3678,28 +3736,23 @@ void AssemblyInfo::getTransf(IComponent2 *swSelectedComponent) {
 		hres = transform->IGetData2(&xtrans, &ytrans, &ztrans, &translat, &scale);
 		if (hres == S_OK) {
 			cout << "Got transf data \n";
-			coords row;
+			coords col;
 			matrix3x3 pattRot;
 			if (xtrans) {
-				row = getVarCoords(xtrans, "x coord");
-				pattRot.setRow(row);
+				col = getVarCoords(xtrans, "x coord");
+				pattRot.setCol(col, 0);
 			}
 			if (ytrans) {
-				row = getVarCoords(ytrans, "y coord");
-				pattRot.setRow(row);
+				col = getVarCoords(ytrans, "y coord");
+				pattRot.setCol(col, 1);
 			}
 			if (ztrans) {
-				row = getVarCoords(ztrans, "z coord");
-				pattRot.setRow(row);
+				col = getVarCoords(ztrans, "z coord");
+				pattRot.setCol(col, 2);
 			}
-			if (xtrans && ytrans && ztrans) {
-				coords rotatedVec = pattRot * zaxis;
-				cout << "zaxis = " << zaxis << ", rotVec = " << rotatedVec << endl;
-				coords rotAngle = rotAnglesZYX(zaxis, rotatedVec);
-				if (rotAngle.length() > 0) {
-					mateInfo.overallRot = rotAngle;
-					cout << "Setting overallRot based upon transf matrix " << mateInfo.overallRot << endl;
-				}
+			if (pattRot.empty() == false && pattRot.isIdentity() == false) {
+				mateInfo.rotMatrix = pattRot;
+				cout << "Setting overallRotMatrix based upon transf matrix " << endl;
 			}
 			if (translat) {
 				mateInfo.displace = getVarCoords(translat, "translat");
@@ -4005,7 +4058,7 @@ static void procComponents(IComponent2* swSelectedComponent, CComPtr<ISelectData
 							if (hres == S_OK && sCmpName) {
 								printbstr("child comp name ", sCmpName);
 							}
-							procComponents(pComp, swSelData, assembly, false);
+							procComponents(pComp, swSelData, assembly);
 						}
 						else cout << "Bad component ptr\n";
 					}
@@ -4045,15 +4098,15 @@ void AssemblyInfo::getRelatedComps(IComponent2 *baseComp) {
 		for (vector<GenericSurf *>::iterator it = surfArray.begin(); it != surfArray.end(); ++it) {
 			if ((*it)->pathNameStr.compare(seedPath) == 0) {
 				if ((*it)->featureTypeStr.compare(referenceType) == 0) {
-					if (mateInfo.overallRot.length() == 0 && (*it)->overallRot.length() != 0)	// Get overallRot from base seed component
-						mateInfo.overallRot = (*it)->overallRot;
+					if (mateInfo.rotMatrix.empty() && (*it)->overallRotMatrix.empty() == false)	// Get overallRot from base seed component
+						mateInfo.rotMatrix = (*it)->overallRotMatrix;
 				} else if ((*it)->featureTypeStr.compare(patternType) == 0) {
 					if (compName.size() == 0 || (*it)->compNameStr.compare(compName) != 0) {
 						compName = (*it)->compNameStr;
 						++patternCnt;
 					}
-					if ((*it)->overallRot.length() == 0)
-						(*it)->overallRot = mateInfo.overallRot;		// Set from seed component
+					if ((*it)->overallRotMatrix.empty())
+						(*it)->overallRotMatrix = mateInfo.rotMatrix;		// Set from seed component
 					if ((*it)->displace.length() == 0 && patternCnt >= 0 && pattDisplaceList.size() > patternCnt)
 						(*it)->displace = pattDisplaceList[patternCnt];
 				}
@@ -4126,23 +4179,24 @@ void AssemblyInfo::getTransfDisplace(ILocalLinearPatternFeatureData *linpattern,
 		hres = transform->IGetData2(&xtrans, &ytrans, &ztrans, &translat, &scale);
 		if (hres == S_OK) {
 			cout << "Got transf data \n";
-			coords row;
+			coords col;
 			matrix3x3 pattRot;
 			if (xtrans) {
-				row = getVarCoords(xtrans, "x coord");
-				pattRot.setRow(row);
+				col = getVarCoords(xtrans, "x coord");
+				pattRot.setCol(col, 0);
 			}
 			if (ytrans) {
-				row = getVarCoords(ytrans, "y coord");
-				pattRot.setRow(row);
+				col = getVarCoords(ytrans, "y coord");
+				pattRot.setCol(col, 1);
 			}
 			if (ztrans) {
-				row = getVarCoords(ztrans, "z coord");
-				pattRot.setRow(row);
+				col = getVarCoords(ztrans, "z coord");
+				pattRot.setCol(col, 2);
 			}
 			if (translat) {
+				// ******* CHECK THIS BEHAVIOR -- MATRIX WAS TRANSPOSED*********
 				coords xdir = pattRot * xaxis;
-				xdir = xdir * -1.0;		// Direction seems to be reversed
+				// xdir = xdir * -1.0;		// Direction seems to be reversed
 				xdir.normalize();
 				coords zdir = pattRot * zaxis;
 				zdir.normalize();
