@@ -297,9 +297,13 @@ public:
 
 
 ostream & operator<<(ostream &os, const matrix3x3 &mat) {
-	os << mat.matrix2d[0] << endl;
-	os << mat.matrix2d[1] << endl;
-	os << mat.matrix2d[2] << endl;
+	for (unsigned row = 0; row < 3; ++row) {
+		os << "[ ";
+		for (unsigned col = 0; col < 3; ++col) {
+			os << mat.matrix2d[row][col];
+		}
+		os << " ]" << endl;
+	}
 	return (os);
 }
 
@@ -3011,9 +3015,11 @@ void AssemblyInfo::findHoles(shapeList *sList) {
 			for (centerSurfIndArray::iterator edInd = edgeList.begin(); edInd != edgeList.end(); ++edInd) {
 				if (edInd->second != *it && surfArray[edInd->second]->wasOutput && partArray[surfArray[edInd->second]->partInd].inBoolSolid == false) {
 					if (surfArray[*it]->compNameStr.compare(surfArray[edInd->second]->compNameStr) == 0 &&
-						edInd->first == surfArray[*it]->position && surfArray[*it]->holeSize() < surfArray[edInd->second]->size()) {
+						edInd->first == surfArray[*it]->position && surfArray[*it]->holeSize() < surfArray[edInd->second]->size() &&
+							surfArray[*it]->size() < surfArray[edInd->second]->size()) {
 						// Found matching edge for shape that was output
 						cout << "Found hole -- shape " << *it << " edge " << edInd->second << endl;
+						cout << "shape pos " << surfArray[*it]->position << " edge  pos" << edInd->first << endl;
 						outputShapeSetPart(sList, *it, *it);
 						partArray[surfArray[edInd->second]->partInd].inBoolSolid = true;
 						pair<int, int> baseHoleInds = make_pair(edInd->second, *it);
@@ -3129,19 +3135,10 @@ void AssemblyInfo::outputPhysVols()
 				// coords relPos = surfArray[it->surfInd]->position - surfArray[partArray.begin()->surfInd]->position;
 				coords relPos = surfArray[it->surfInd]->position;
 				if (surfArray[it->surfInd]->overallRotMatrix.empty() == false) { // Apply overall rotation for this component
-					double posLen = relPos.length();
 					cout << "index " << it->surfInd << " RelPos rotates from " << relPos;
 					matrix3x3 rotMatrix = surfArray[it->surfInd]->overallRotMatrix;
 					relPos = rotMatrix * relPos;
-					// relPos = rotVecZYX(relPos, revRot);
-					if (posLen != relPos.length()) {
-						cout << "relPos len changed from " << posLen << " to " << relPos.length() << endl;
-						relPos.normalize();
-						relPos = relPos * posLen;
-					}
 					cout << " to " << relPos << endl;
-					cout << "by matrix\n";
-					cout << rotMatrix;
 				}
 				// relPos = surfArray[it->surfInd]->position + surfArray[it->surfInd]->displace;
 				if (surfArray[it->surfInd]->displace.length() > 0)
@@ -3727,6 +3724,7 @@ static coords getVarCoords(CComPtr<IMathVector> transfCoords, const char *const 
 
 
 void AssemblyInfo::getTransf(IComponent2 *swSelectedComponent) {
+	mateInfo.clear(); // Clear values from previous component
 	CComPtr<IMathTransform> transform;
 	hres = swSelectedComponent->get_Transform2(&transform);
 	cout << "transform fetch hres = " << hres << " ptr = " << transform << endl;
@@ -3763,10 +3761,9 @@ void AssemblyInfo::getTransf(IComponent2 *swSelectedComponent) {
 	}
 }
 
+// No longer used, but code may be useful in the future
 void AssemblyInfo::getMates(IComponent2 *swSelectedComponent) {
 	mateInfo.clear(); // Clear values from previous component
-	getTransf(swSelectedComponent);
-	return;
 	VARIANT mateList;
 	VariantInit(&mateList);
 	long nMateCount = -1;
@@ -3835,6 +3832,7 @@ void AssemblyInfo::getMates(IComponent2 *swSelectedComponent) {
 
 static void processComp(IComponent2* swSelectedComponent, CComPtr<ISelectData> &swSelData,
 		AssemblyInfo &assembly) {
+	assembly.getTransf(swSelectedComponent);
 	CComPtr<IMeasure> mymeasure;
 	bool measok = false;
 	hres = swSelectedComponent->Select4(VARIANT_FALSE, swSelData, VARIANT_TRUE, &retVal);
@@ -4011,7 +4009,7 @@ static void processComp(IComponent2* swSelectedComponent, CComPtr<ISelectData> &
 
 
 static void procComponents(IComponent2* swSelectedComponent, CComPtr<ISelectData> &swSelData,
-	AssemblyInfo &assembly, bool getMates = true) {
+	AssemblyInfo &assembly) {
 	static bool debugAllow = true;
 	CComBSTR sPathName(L"");
 	hres = swSelectedComponent->GetPathName(&sPathName);
@@ -4028,8 +4026,6 @@ static void procComponents(IComponent2* swSelectedComponent, CComPtr<ISelectData
 	int numChil = 0;
 	hres = swSelectedComponent->IGetChildrenCount(&numChil);
 	cout << "num children " << numChil << endl;
-	if (getMates)
-		assembly.getMates(swSelectedComponent);
 	if (numChil > 0) {
 		debugAllow = true;
 		VARIANT compArray;
