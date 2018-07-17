@@ -62,6 +62,8 @@ static const char *const selectTypeStr(long selTypeID) {
 
 static const double MIN_THICKNESS = 0.0005;
 static const double MIN_ABS_DIFF = 0.0005;
+static const double MIN_PART_SIZE = 0.0001; // Smallest size is 0.1 mm, ignore smaller
+
 
 typedef struct funcpair {
 	HRESULT(*boolFunc)(VARIANT_BOOL *arg);
@@ -337,7 +339,7 @@ public:
 	GenericSurf(long surfIDVal, ISurface *swSurf) :
 		radiusTmp(0), areaTmp(0), diameterTmp(0), perimeterTmp(0),
 		angleTmp(2.0 * M_PI), lengthTmp(0), surfID(surfIDVal), surfPtr(swSurf),
-		wasOutput(false), subType(BOARD_ID) // Not used for non-plane surfaces
+		wasOutput(false), valid(true), subType(BOARD_ID) // Not used for non-plane surfaces
 	{}
 
 	virtual HRESULT boolFunc(VARIANT_BOOL *arg, ISurface *surfPtr) = 0;
@@ -391,7 +393,7 @@ public:
 	double showSurfParams(AssemblyInfo *assembly);
 
 	long surfID;
-	bool wasOutput;
+	bool wasOutput, valid;
 	long partInd;
 	vector<sideInfo> sideList;
 	string matNameStr, compNameStr, pathNameStr, featureTypeStr;
@@ -449,26 +451,26 @@ public:
 		cout << "Cone set size radius smRadius " << radius << " " << smRadius << endl;
 		if (radius >= 0) {
 			if (smRadius <= 0)
-				smRadius = radius;
+				smRadius = checkZero(radius, MIN_PART_SIZE);
 			if (perimeter > 0) {
 				double radTmp = (perimeter / (2.0 * M_PI)) - smRadius;
 				if (radTmp > 0.0) {
-					lgRadius = radTmp;
+					lgRadius = checkZero(radTmp, MIN_PART_SIZE);
 					if (lgRadius < smRadius) {
-						lgRadius = smRadius;
-						smRadius = radTmp; // Make sure "smRadius" is the smaller value
+						lgRadius = checkZero(smRadius, MIN_PART_SIZE);
+						smRadius = checkZero(radTmp, MIN_PART_SIZE); // Make sure "smRadius" is the smaller value
 					}
 					if (height <= 0 && lgRadius > 0 && area > 0 && smRadius >= 0) {
 						double ht = pow(area / (M_PI * (lgRadius + smRadius)), 2.0) - pow(lgRadius - smRadius, 2.0);
 						if (ht >= 0.0) {
-							height = sqrt(ht);
+							height = checkZero(sqrt(ht), MIN_PART_SIZE);
 						}
 					}
 				}
 			}
 		}
 		if (radius == -1.0 && heightVal > 0 && area <= 0 && perimeter <= 0 && diam <= 0) // Override height
-			height = heightVal;
+			height = checkZero(heightVal, MIN_PART_SIZE);
 		if (height > 0)
 			cout << "Cone height is currently = " << height << endl;
 		return (lgRadius > 0 && height > 0);
@@ -521,18 +523,18 @@ public:
 				if (angleVal != angle)
 					cout << "ERROR: inconsistent angle values! Old = " << angle << " new = " << angleVal << endl;
 			}
-			else angle = angleVal;
+			else angle = checkZero(angleVal, MIN_PART_SIZE);
 		}
 		if (rad > radius)
-			radius = rad;
+			radius = checkZero(rad, MIN_PART_SIZE);
 
 		// Don't use lengthVal if it is circumference
 		if (lengthVal > length && approxEqual(lengthVal, diameter / M_PI) == false)
-			length = lengthVal;
+			length = checkZero(lengthVal, MIN_PART_SIZE);
 		else if (area > 0 && diameter > 0.0) {
 			 double newLength = area / (M_PI * diameter);
 			 if (newLength > 0.0)
-				length = newLength;
+				 length = checkZero(newLength, MIN_PART_SIZE);
 		}
 		return (radius > 0 && length >= 0.001 && angle > 0); // Omit tiny cylinders
 	}
@@ -2496,6 +2498,11 @@ void AssemblyInfo::getEdgeDist(IFace2 *const faceptr, CComPtr<IMeasure> &mymeasu
 		}
 		SafeArrayUnaccessData(edgesview);
 		SafeArrayDestroy(edgesview);
+		if (surfArray[surfArrayInd]->position.length() > 99) {
+			cout << "Valid position could not be calculated " << surfArray[surfArrayInd]->position << endl;
+			cout << "Surface will be skipped\n";
+			surfArray[surfArrayInd]->valid = false;
+		}
 	}
 }
 
@@ -2730,7 +2737,7 @@ static void getFaceDistances(int faceIndList[20], int listSz, LPDISPATCH *srcptr
 			inSmRadius = cone2->smRadius;
 			inLgRadius = cone2->lgRadius;
 		}
-		else if (outLgRadius == inLgRadius) {
+		if (checkZero(outLgRadius - inLgRadius) == 0.0) {
 			// Only one surface -- it's a hole
 			inSmRadius = inLgRadius = 0.0;
 		}
@@ -2759,7 +2766,7 @@ static void getFaceDistances(int faceIndList[20], int listSz, LPDISPATCH *srcptr
 			lgRadius = smRadius;
 			smRadius = cyl2->radius;
 		}
-		else if (lgRadius == smRadius) // Only one surface -- it's a hole or solid
+		if (checkZero(lgRadius - smRadius) == 0) // Only one surface -- it's a hole or solid
 			smRadius = 0;
 		const char *const name = nameIncr(CYLINDER_ID);
 		xmlElem beginEnd, attrib1, attrib2;
@@ -2938,7 +2945,7 @@ void AssemblyInfo::outputSolids(shapeList *sList, bool looseMatch, bool singleSo
 {
 	for (vector<int>::iterator it = sList->shapeInds.begin(); it != sList->shapeInds.end(); ++it)
 	{
-		if (surfArray[*it]->wasOutput == false) {
+		if (surfArray[*it]->wasOutput == false && surfArray[*it]->valid) {
 			if (singleSolids == false) {
 				for (int step = 0; step == 0 || (looseMatch && step == 1); ++step) {
 					if (surfArray[*it]->wasOutput == false) {
@@ -2960,7 +2967,7 @@ void AssemblyInfo::outputSolids(shapeList *sList, bool looseMatch, bool singleSo
 					} // end if was output == false
 				} // end for steps
 			}
-			if (surfArray[*it]->wasOutput == false &&
+			if (surfArray[*it]->wasOutput == false && surfArray[*it]->valid &&
 				(singleSolids || surfArray[*it]->surfID == PLANE_ID || surfArray[*it]->surfID == BSURF_ID ||
 					surfArray[*it]->surfID == TORUS_ID || surfArray[*it]->surfID == CONE_ID)) {
 				cout << "Outputting single face " << *it << endl;
@@ -3010,7 +3017,7 @@ void AssemblyInfo::findHoles(shapeList *sList) {
 	// For now, only allow cylindrical holes
 	for (vector<int>::iterator it = sList->shapeInds.begin(); it != sList->shapeInds.end(); ++it)
 	{
-		if (surfArray[*it]->wasOutput == false) {
+		if (surfArray[*it]->wasOutput == false && surfArray[*it]->valid) {
 			// Leftover cylinder -- actually a hole
 			for (centerSurfIndArray::iterator edInd = edgeList.begin(); edInd != edgeList.end(); ++edInd) {
 				if (edInd->second != *it && surfArray[edInd->second]->wasOutput && partArray[surfArray[edInd->second]->partInd].inBoolSolid == false) {
@@ -3115,6 +3122,26 @@ void AssemblyInfo::getInitRot(const int index) {
 	*/
 }
 
+
+// Protect against positions outside of the WorldBox
+static void fixBadPosition(coords &relPos)
+{
+	static double MAX_POSITION = 99.0;
+	if (fabs(relPos.x) >= MAX_POSITION) {
+		cout << "Bad x position set to zero: " << relPos.x << endl;
+		relPos.x = 0.0;
+	}
+	if (fabs(relPos.y) >= MAX_POSITION) {
+		cout << "Bad y position set to zero: " << relPos.y << endl;
+		relPos.y = 0.0;
+	}
+	if (fabs(relPos.z) >= MAX_POSITION) {
+		cout << "Bad z position set to zero: " << relPos.z << endl;
+		relPos.z = 0.0;
+	}
+}
+
+
 void AssemblyInfo::outputPhysVols()
 {
 	xmlElem beginEnd, attrib1, attrib2, attrib3;
@@ -3145,6 +3172,7 @@ void AssemblyInfo::outputPhysVols()
 					cout << "Apply displacement displace: " << surfArray[it->surfInd]->displace << ", pos " << relPos << endl;
 				relPos = relPos + surfArray[it->surfInd]->displace;
 				gdmlout << indent3 << beginEnd.openElem("position") << attrib1.attribute("name", nameIncr(POSITION_ID));
+				fixBadPosition(relPos);
 				gdmlout << attrib1.attribute("x", relPos.x) << attrib2.attribute("y", relPos.y) << attrib3.attribute("z", relPos.z);
 				gdmlout << beginEnd.closeElem() << endl;
 				gdmlout << indent3 << beginEnd.openElem("rotation") << attrib1.attribute("name", nameIncr(ROTATION_ID));
@@ -3160,7 +3188,7 @@ void AssemblyInfo::outputPhysVols()
 
 void AssemblyInfo::outputParts()
 {
-	for (int index = 0; index <= surfArrayInd; ++index)
+	for (int index = 0; index <= surfArrayInd && surfArray[index]->valid; ++index)
 	{
 		if (surfArray[index]->overallRotMatrix.empty() == false) { // Apply overall rotation for this component
 			cout << "Rotating axis from " << surfArray[index]->axis << " to ";
