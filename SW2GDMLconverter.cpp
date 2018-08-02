@@ -3188,28 +3188,30 @@ void AssemblyInfo::outputPhysVols()
 
 void AssemblyInfo::outputParts()
 {
-	for (int index = 0; index <= surfArrayInd && surfArray[index]->valid; ++index)
+	for (int index = 0; index <= surfArrayInd; ++index)
 	{
-		if (surfArray[index]->overallRotMatrix.empty() == false) { // Apply overall rotation for this component
-			cout << "Rotating axis from " << surfArray[index]->axis << " to ";
-			surfArray[index]->axis = surfArray[index]->overallRotMatrix * surfArray[index]->axis;
-			cout << surfArray[index]->axis << endl;
-			if (surfArray[index]->startAxis.length() > 0)
-				surfArray[index]->startAxis = surfArray[index]->overallRotMatrix * surfArray[index]->startAxis;
-		}
-		// if (surfArray[index]->overallRot.length() > 0) { // Apply overall rotation for this component
+		if (surfArray[index]->valid) {
+			if (surfArray[index]->overallRotMatrix.empty() == false) { // Apply overall rotation for this component
+				cout << "Rotating axis from " << surfArray[index]->axis << " to ";
+				surfArray[index]->axis = surfArray[index]->overallRotMatrix * surfArray[index]->axis;
+				cout << surfArray[index]->axis << endl;
+				if (surfArray[index]->startAxis.length() > 0)
+					surfArray[index]->startAxis = surfArray[index]->overallRotMatrix * surfArray[index]->startAxis;
+			}
+			// if (surfArray[index]->overallRot.length() > 0) { // Apply overall rotation for this component
 			// surfArray[index]->axis = rotVecZYX(surfArray[index]->axis, surfArray[index]->overallRot);
 			// if (surfArray[index]->startAxis.length() > 0)
-				// surfArray[index]->startAxis = rotVecZYX(surfArray[index]->startAxis, surfArray[index]->overallRot);
-		// }
-		surfArray[index]->rotation = rotAnglesZYX(zaxis, surfArray[index]->axis);
-		// Partial disks and cylinders and boards need initial rotation
-		if (surfArray[index]->startAxis.length() > 0 && (surfArray[index]->getAngle() != (2.0 * M_PI) ||
+			// surfArray[index]->startAxis = rotVecZYX(surfArray[index]->startAxis, surfArray[index]->overallRot);
+			// }
+			surfArray[index]->rotation = rotAnglesZYX(zaxis, surfArray[index]->axis);
+			// Partial disks and cylinders and boards need initial rotation
+			if (surfArray[index]->startAxis.length() > 0 && (surfArray[index]->getAngle() != (2.0 * M_PI) ||
 				(surfArray[index]->surfID == PLANE_ID && surfArray[index]->getSubType() == BOARD_ID))) {
-			getInitRot(index);
+				getInitRot(index);
+			}
+			cout << "Index " << std::dec << index << " axis " << surfArray[index]->axis;
+			cout << " rotation " << surfArray[index]->rotation << endl;
 		}
-		cout << "Index " << std::dec << index << " axis " << surfArray[index]->axis;
-		cout << " rotation " << surfArray[index]->rotation << endl;
 	}
 	cout << "Output cones\n";
 	outputSolids(&coneList);
