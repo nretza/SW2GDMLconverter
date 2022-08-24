@@ -3,9 +3,27 @@
 // are changed infrequently
 //
 
+#define UNICODE
+
 #pragma once
 
-#include "targetver.h"
+#pragma comment(lib, "comdlg32.lib")
+
+#include <windows.h>
+
+#define _USE_MATH_DEFINES
+#include <cmath>
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+
+
+#include "sdkddkver.h"
+#include "atlbase.h"
 
 #include <stdio.h>
 #include <tchar.h>

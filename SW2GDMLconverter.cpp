@@ -9,7 +9,6 @@
 // smaller face
 
 
-
 #include "stdafx.h"
 //Import the SolidWorks type library
 #import "sldworks.tlb" raw_interfaces_only, raw_native_types, no_namespace, named_guids 
@@ -19,17 +18,6 @@
 
 #import "swcommands.tlb"  
 
-
-#include "atlbase.h"
-
-#define _USE_MATH_DEFINES
-#include <cmath>
-#include <iostream>
-#include <fstream>
-#include <sstream>
-#include <unordered_map>
-#include <unordered_set>
-#include <vector>
 
 using namespace std;
 
